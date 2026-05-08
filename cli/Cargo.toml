@@ -1,0 +1,20 @@
+[package]
+name = "mnemonic-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mnemonic"
+path = "src/main.rs"
+
+[dependencies]
+mnemonic-core = { workspace = true }
+chrono = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+tokio = { version = "1", features = ["rt", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = { workspace = true }

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Mnemonic captures short voice notes locally. Audio is processed on your machine via a model server you run yourself; nothing leaves your device.</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Local. No telemetry.</string>
+</dict>
+</plist>

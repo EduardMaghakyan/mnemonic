@@ -1,0 +1,16 @@
+[hotkey]
+combo = "ctrl+alt+space"
+mode = "hold"
+
+[audio]
+max_seconds = 300
+keep_raw = true
+
+[paths]
+notes_dir = "~/Mnemonic/notes"
+audio_dir = "~/Mnemonic/audio"
+
+[model]
+endpoint = "http://127.0.0.1:5809"
+name = "gemma-4-e4b-it"
+thinking = true
