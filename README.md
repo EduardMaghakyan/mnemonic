@@ -129,6 +129,35 @@ thinking = true           # Gemma 4's chain-of-thought; set false for ~5x faster
 
 Edits hot-reload — the config file watcher re-registers the hotkey and applies path/model changes on save without a restart.
 
+## Use with Obsidian
+
+Mnemonic notes are plain Markdown with YAML frontmatter, so any Obsidian vault renders them as-is — no plugin or custom build required.
+
+Two ways to wire it up (both zero-code):
+
+1. **Point `notes_dir` at a vault folder.** Edit `~/.config/mnemonic/config.toml`:
+
+   ```toml
+   [paths]
+   notes_dir = "~/Documents/YourVault/Voice Notes"
+   ```
+
+   Saves hot-reload — no restart needed.
+
+2. **Symlink the existing notes dir into a vault.** Keeps `~/Mnemonic/notes` as the source of truth, so the CLI's `ls`/`find`/`show`/`redo` continue to work against the canonical path:
+
+   ```bash
+   ln -s ~/Mnemonic/notes "~/Documents/YourVault/Voice Notes"
+   ```
+
+What you get out of the box:
+
+- Frontmatter (id, created, duration, status, model, tags, people, projects, places) renders in Obsidian's **Properties** panel.
+- `tags` are indexed into Obsidian's tag pane.
+- The relative `audio:` link in the frontmatter is clickable and plays in Obsidian's audio embed.
+
+Not integrated yet: entity backlinks (people/projects/places aren't rendered as `[[wikilinks]]`), and there's no auto-open-in-Obsidian after a recording. Both are possible follow-ups.
+
 ## Troubleshooting
 
 Run `mnemonic doctor` first. It surfaces the most common issues with actionable hints.
