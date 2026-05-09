@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "mnemonic-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "cpal",
@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "mnemonic-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2367,7 +2367,7 @@ dependencies = [
 
 [[package]]
 name = "mnemonic-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",

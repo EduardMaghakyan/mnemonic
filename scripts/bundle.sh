@@ -46,7 +46,7 @@ echo "==> Tauri build (.app + .dmg)"
 cargo tauri build --target "$TARGET"
 
 APP="$ROOT/target/$TARGET/release/bundle/macos/Mnemonic.app"
-DMG="$ROOT/target/$TARGET/release/bundle/dmg/Mnemonic_0.1.0_aarch64.dmg"
+DMG="$(find "$ROOT/target/$TARGET/release/bundle/dmg" -maxdepth 1 -name "Mnemonic_*_aarch64.dmg" | head -1)"
 echo
 echo "Built:"
 echo "  $APP"
