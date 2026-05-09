@@ -96,7 +96,7 @@ async fn call_llama(
 }
 
 pub fn is_silent(note: &StructuredNote) -> bool {
-    note.title.eq_ignore_ascii_case("untranscribable")
+    note.cleaned.trim().is_empty()
 }
 
 /// Ping the configured llama-server endpoint's /health. Returns Ok if it

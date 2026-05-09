@@ -13,7 +13,9 @@ pub use config::{
 pub use llama::{
     health_check, is_silent, structure_audio, StructureRequest, StructuringResult, SYSTEM_PROMPT,
 };
-pub use markdown::{render_note, write_note, NoteContent, NoteMeta, NoteMetaOverrides, WriteResult};
-pub use notes::{find_by_id_prefix, load_note, parse_since, walk_notes, FindByPrefix, LoadedNote};
+pub use markdown::{
+    append_entry, count_entries, AppendResult, EntryOverrides, NoteContent,
+};
+pub use notes::{load_day, parse_since, walk_days, DailyFile};
 pub use schema::{NoteStatus, StructuredNote};
 pub use slug::title_to_slug;

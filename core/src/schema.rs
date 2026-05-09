@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructuredNote {
-    pub title: String,
     pub cleaned: String,
 }
 

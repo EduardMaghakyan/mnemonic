@@ -1,14 +1,11 @@
 mod doctor;
-mod redo;
 
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
-use chrono::{Duration as ChronoDuration, Local, Utc};
+use chrono::{Duration as ChronoDuration, Local, NaiveDate, Utc};
 use clap::{Parser, Subcommand};
-use mnemonic_core::{
-    find_by_id_prefix, parse_since, walk_notes, Config, FindByPrefix, LoadedNote,
-};
+use mnemonic_core::{count_entries, parse_since, walk_days, Config, DailyFile};
 
 #[derive(Parser)]
 #[command(name = "mnemonic", version, about = "Local voice notes — list, search, manage.")]
@@ -19,35 +16,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// List notes newest-first
+    /// List daily notes newest-first
     Ls {
         #[arg(long)]
         since: Option<String>,
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// Search notes by case-insensitive substring
+    /// Search across daily notes by case-insensitive substring
     Find {
         query: String,
         #[arg(long)]
         open: bool,
     },
-    /// Print a note by id or unambiguous prefix
-    Show { id: String },
+    /// Print a daily note (defaults to today; accepts YYYY-MM-DD)
+    Show { date: Option<String> },
     /// Health and configuration check
     Doctor,
-    /// Re-run the structuring prompt against the saved audio for a note
-    Redo { id: String },
 }
 
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Ls { since, limit } => cmd_ls(since.as_deref(), limit),
-        Command::Show { id } => cmd_show(&id),
+        Command::Show { date } => cmd_show(date.as_deref()),
         Command::Find { query, open } => cmd_find(&query, open),
         Command::Doctor => doctor::run(),
-        Command::Redo { id } => redo::run(&id),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");
@@ -64,29 +58,23 @@ fn load_notes_dir() -> Result<PathBuf, String> {
 
 fn cmd_ls(since: Option<&str>, limit: Option<usize>) -> Result<(), String> {
     let notes_dir = load_notes_dir()?;
-    let notes = walk_notes(&notes_dir, |p, e| {
+    let days = walk_days(&notes_dir, |p, e| {
         eprintln!("warning: {}: {e}", p.display())
     });
 
     let cutoff = match since {
         Some(s) => Some(
-            Utc::now()
+            (Utc::now()
                 - ChronoDuration::from_std(parse_since(s)?)
-                    .map_err(|e| format!("duration overflow: {e}"))?,
+                    .map_err(|e| format!("duration overflow: {e}"))?)
+            .date_naive(),
         ),
         None => None,
     };
 
-    let filtered: Vec<&LoadedNote> = notes
+    let filtered: Vec<&DailyFile> = days
         .iter()
-        .filter(|n| {
-            if let Some(c) = cutoff {
-                if n.created.with_timezone(&Utc) < c {
-                    return false;
-                }
-            }
-            true
-        })
+        .filter(|d| cutoff.map_or(true, |c| d.date >= c))
         .take(limit.unwrap_or(usize::MAX))
         .collect();
 
@@ -94,36 +82,12 @@ fn cmd_ls(since: Option<&str>, limit: Option<usize>) -> Result<(), String> {
         println!("(no notes)");
         return Ok(());
     }
-    print_table(&filtered);
+    for d in &filtered {
+        let n = count_entries(&d.body);
+        let label = if n == 1 { "entry" } else { "entries" };
+        println!("{date}  {n:>3} {label}", date = d.date.format("%Y-%m-%d"));
+    }
     Ok(())
-}
-
-fn print_table(notes: &[&LoadedNote]) {
-    let today = Local::now().date_naive();
-    for n in notes {
-        let local = n.created.with_timezone(&Local);
-        let time = if local.date_naive() == today {
-            local.format("%H:%M").to_string()
-        } else {
-            local.format("%Y-%m-%d %H:%M").to_string()
-        };
-        let title = title_from_body(&n.body).unwrap_or_else(|| "(untitled)".to_string());
-        println!("{time:<16}  {title}", title = truncate(&title, 60));
-    }
-}
-
-fn title_from_body(body: &str) -> Option<String> {
-    body.lines()
-        .find_map(|line| line.strip_prefix("# ").map(|s| s.to_string()))
-}
-
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max_chars - 1).collect();
-    out.push('…');
-    out
 }
 
 fn cmd_find(query: &str, open_first: bool) -> Result<(), String> {
@@ -132,16 +96,13 @@ fn cmd_find(query: &str, open_first: bool) -> Result<(), String> {
     }
     let needle = query.to_lowercase();
     let notes_dir = load_notes_dir()?;
-    let notes = walk_notes(&notes_dir, |p, e| {
+    let days = walk_days(&notes_dir, |p, e| {
         eprintln!("warning: {}: {e}", p.display())
     });
 
     let mut hits: Vec<FindHit> = Vec::new();
-    for note in &notes {
-        let mut matches = note_matches(note, &needle);
-        if !matches.is_empty() {
-            hits.append(&mut matches);
-        }
+    for day in &days {
+        hits.extend(day_matches(day, &needle));
     }
 
     if hits.is_empty() {
@@ -173,14 +134,11 @@ struct FindHit {
     context: Vec<(i32, String)>,
 }
 
-fn note_matches(note: &LoadedNote, needle: &str) -> Vec<FindHit> {
+fn day_matches(day: &DailyFile, needle: &str) -> Vec<FindHit> {
     let mut hits = Vec::new();
-    let lines: Vec<&str> = note.body.lines().collect();
-    let mut emitted_lines: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-
+    let lines: Vec<&str> = day.body.lines().collect();
     for (i, line) in lines.iter().enumerate() {
-        if line.to_lowercase().contains(needle) && !emitted_lines.contains(&i) {
-            emitted_lines.insert(i);
+        if line.to_lowercase().contains(needle) {
             let mut ctx = Vec::with_capacity(3);
             if i > 0 {
                 ctx.push((-1, lines[i - 1].to_string()));
@@ -190,43 +148,36 @@ fn note_matches(note: &LoadedNote, needle: &str) -> Vec<FindHit> {
                 ctx.push((1, lines[i + 1].to_string()));
             }
             hits.push(FindHit {
-                path: note.path.clone(),
+                path: day.path.clone(),
                 line_no: i + 1,
                 context: ctx,
             });
         }
     }
-
     hits
 }
 
-fn cmd_show(prefix: &str) -> Result<(), String> {
+fn cmd_show(date: Option<&str>) -> Result<(), String> {
     let notes_dir = load_notes_dir()?;
-    let notes = walk_notes(&notes_dir, |p, e| {
-        eprintln!("warning: {}: {e}", p.display())
-    });
-    let note = match find_by_id_prefix(&notes, prefix) {
-        FindByPrefix::One(n) => n,
-        FindByPrefix::None => return Err(format!("no note matches {prefix:?}")),
-        FindByPrefix::Many(ms) => {
-            let ids: Vec<&str> = ms.iter().map(|n| n.meta.id.as_str()).collect();
-            return Err(format!(
-                "ambiguous prefix {prefix:?}; matches:\n  {}",
-                ids.join("\n  ")
-            ));
-        }
+    let target = match date {
+        Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map_err(|e| format!("date {s:?} not YYYY-MM-DD: {e}"))?,
+        None => Local::now().date_naive(),
     };
+    let path = notes_dir.join(format!("{}.md", target.format("%Y-%m-%d")));
+    if !path.exists() {
+        return Err(format!("no daily note for {}", target.format("%Y-%m-%d")));
+    }
 
     let bat = ProcessCommand::new("bat")
         .args(["--paging=never", "-l", "markdown"])
-        .arg(&note.path)
+        .arg(&path)
         .status();
     if matches!(&bat, Ok(s) if s.success()) {
         return Ok(());
     }
-
-    let content = std::fs::read_to_string(&note.path)
-        .map_err(|e| format!("read {}: {e}", note.path.display()))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
     print!("{content}");
     Ok(())
 }

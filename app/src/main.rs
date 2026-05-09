@@ -10,8 +10,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use mnemonic_core::{
-    health_check, is_silent, structure_audio, write_note, Config, HotkeyMode, NoteContent,
-    NoteMetaOverrides, NoteStatus, StructureRequest, StructuringResult, WriteResult,
+    append_entry, health_check, is_silent, structure_audio, AppendResult, Config, EntryOverrides,
+    HotkeyMode, NoteContent, NoteStatus, StructureRequest, StructuringResult,
 };
 use log::{error, info, warn};
 use mnemonic_core::permissions::{mic_status, MicStatus, PRIVACY_MIC_PANE};
@@ -298,18 +298,17 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
         }
     }
 
-    let overrides = NoteMetaOverrides {
-        duration_sec,
+    let overrides = EntryOverrides {
         keep_raw: cfg.audio.keep_raw,
         model: cfg.model.name.clone(),
         mmproj: MMPROJ_ID.into(),
     };
     let now = chrono::Local::now();
 
-    let write_result: Result<WriteResult, String> = match &outcome {
+    let write_result: Result<AppendResult, String> = match &outcome {
         StructuringResult::Ok(note) => {
             info!("structured ({elapsed:.1}s) status=ok");
-            write_note(
+            append_entry(
                 &notes_dir,
                 &audio_dir,
                 now,
@@ -320,7 +319,7 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
         }
         StructuringResult::Malformed { raw } => {
             info!("structured ({elapsed:.1}s) status=malformed");
-            write_note(
+            append_entry(
                 &notes_dir,
                 &audio_dir,
                 now,
@@ -331,7 +330,7 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
         }
         StructuringResult::Failed { error } => {
             warn!("structured ({elapsed:.1}s) status=failed: {error}");
-            write_note(
+            append_entry(
                 &notes_dir,
                 &audio_dir,
                 now,
@@ -344,7 +343,7 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
 
     match write_result {
         Ok(written) => {
-            info!("saved: {}", logging::redact(&written.markdown_path));
+            info!("appended to: {}", logging::redact(&written.daily_path));
             if let Some(audio_path) = &written.audio_path {
                 info!("audio: {}", logging::redact(audio_path));
             }
@@ -374,20 +373,24 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
     }
 }
 
-fn notify_for_write(app: &AppHandle, outcome: &StructuringResult, written: &WriteResult) {
+fn notify_for_write(app: &AppHandle, outcome: &StructuringResult, written: &AppendResult) {
     let body = match (&written.status, outcome) {
         (NoteStatus::Ok, StructuringResult::Ok(note)) => {
-            notify(app, &note.title, "Saved to Mnemonic");
-            return;
+            let chars: Vec<char> = note.cleaned.chars().collect();
+            if chars.len() > 80 {
+                let snippet: String = chars.iter().take(80).collect();
+                format!("{snippet}…")
+            } else {
+                chars.iter().collect()
+            }
         }
         (NoteStatus::Malformed, _) => {
-            "Model returned non-JSON twice — saved with status: malformed. Run `mnemonic doctor`."
-                .to_string()
+            "Model returned non-JSON twice — stub entry written. Run `mnemonic doctor`.".to_string()
         }
         (NoteStatus::Failed, StructuringResult::Failed { error }) => {
             format!("Structuring failed: {error}. Audio preserved. Run `mnemonic doctor`.")
         }
-        _ => "Saved to Mnemonic".to_string(),
+        _ => "Appended to today's note".to_string(),
     };
     notify(app, "Mnemonic", &body);
 }
