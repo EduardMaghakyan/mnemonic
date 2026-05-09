@@ -65,26 +65,55 @@ fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn make_icon(rgba: [u8; 4]) -> Image<'static> {
-    const SIZE: u32 = 22;
+/// Render an antialiased ring with a filled dot in the centre, sized to look
+/// proportional in the macOS menu bar (~22pt tall).
+fn render_icon(rgb: [u8; 3]) -> Image<'static> {
+    const SIZE: u32 = 44; // 22pt @2x for retina sharpness
+    const OUTER_R: f32 = 13.0;
+    const RING_THICKNESS: f32 = 2.5;
+    const DOT_R: f32 = 4.5;
+
+    let inner_ring_r = OUTER_R - RING_THICKNESS;
+    let cx = (SIZE as f32 - 1.0) * 0.5;
+    let cy = (SIZE as f32 - 1.0) * 0.5;
     let mut data = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for _ in 0..(SIZE * SIZE) {
-        data.extend_from_slice(&rgba);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            let outer_edge = (OUTER_R + 0.5 - d).clamp(0.0, 1.0);
+            let inner_edge = (d - (inner_ring_r - 0.5)).clamp(0.0, 1.0);
+            let ring = outer_edge.min(inner_edge);
+            let dot = (DOT_R + 0.5 - d).clamp(0.0, 1.0);
+            let coverage = ring.max(dot);
+            data.push(rgb[0]);
+            data.push(rgb[1]);
+            data.push(rgb[2]);
+            data.push((coverage * 255.0).round() as u8);
+        }
     }
     Image::new_owned(data, SIZE, SIZE)
 }
 
 fn icon_for(state: RecorderState) -> Image<'static> {
     match state {
-        RecorderState::Idle => make_icon([90, 90, 90, 255]),
-        RecorderState::Recording => make_icon([220, 40, 40, 255]),
-        RecorderState::Processing => make_icon([230, 170, 30, 255]),
+        // Idle is rendered as a template image (see is_template); only the
+        // alpha mask is used by macOS, so the RGB here is incidental.
+        RecorderState::Idle => render_icon([0, 0, 0]),
+        RecorderState::Recording => render_icon([220, 40, 40]),
+        RecorderState::Processing => render_icon([230, 170, 30]),
     }
+}
+
+fn is_template(state: RecorderState) -> bool {
+    matches!(state, RecorderState::Idle)
 }
 
 fn apply_state(app: &AppHandle, new_state: RecorderState) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(icon_for(new_state)));
+        let _ = tray.set_icon_as_template(is_template(new_state));
     }
     info!("state -> {new_state:?}");
 }
@@ -632,6 +661,7 @@ fn main() {
             let menu_log_path = logging::log_file(&home_dir());
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(icon_for(RecorderState::Idle))
+                .icon_as_template(is_template(RecorderState::Idle))
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.0.as_str() {
                     "open_config" => open_config_file(&menu_cfg_path),
