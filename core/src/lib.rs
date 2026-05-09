@@ -15,5 +15,5 @@ pub use llama::{
 };
 pub use markdown::{render_note, write_note, NoteContent, NoteMeta, NoteMetaOverrides, WriteResult};
 pub use notes::{find_by_id_prefix, load_note, parse_since, walk_notes, FindByPrefix, LoadedNote};
-pub use schema::{Entities, NoteStatus, StructuredNote};
+pub use schema::{NoteStatus, StructuredNote};
 pub use slug::title_to_slug;

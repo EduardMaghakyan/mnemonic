@@ -129,18 +129,9 @@ mod tests {
         p
     }
 
-    fn meta_yaml(id: &str, created: &str, tags: &[&str], status: &str) -> String {
-        let tags_block = if tags.is_empty() {
-            "tags: []".to_string()
-        } else {
-            let mut s = String::from("tags:\n");
-            for t in tags {
-                s.push_str(&format!("- {t}\n"));
-            }
-            s.trim_end().to_string()
-        };
+    fn meta_yaml(id: &str, created: &str, status: &str) -> String {
         format!(
-            "id: '{id}'\ncreated: '{created}'\nduration_sec: 5\naudio: null\n{tags_block}\npeople: []\nprojects: []\nplaces: []\nmodel: gemma-4-e4b-it\nmmproj: mmproj-bf16\nstatus: {status}\n"
+            "id: '{id}'\ncreated: '{created}'\nduration_sec: 5\naudio: null\nmodel: gemma-4-e4b-it\nmmproj: mmproj-bf16\nstatus: {status}\n"
         )
     }
 
@@ -174,14 +165,14 @@ mod tests {
             &dir,
             "2026-05-08",
             "120000-old",
-            &meta_yaml("a", "2026-05-08T12:00:00+00:00", &["alpha"], "ok"),
+            &meta_yaml("a", "2026-05-08T12:00:00+00:00", "ok"),
             "# Old\n",
         );
         fixture(
             &dir,
             "2026-05-08",
             "180000-newer",
-            &meta_yaml("b", "2026-05-08T18:00:00+00:00", &["beta"], "ok"),
+            &meta_yaml("b", "2026-05-08T18:00:00+00:00", "ok"),
             "# Newer\n",
         );
         // junk file that should be skipped
@@ -203,7 +194,7 @@ mod tests {
             &dir,
             "2026-05-08",
             "120000-good",
-            &meta_yaml("good", "2026-05-08T12:00:00+00:00", &["x"], "ok"),
+            &meta_yaml("good", "2026-05-08T12:00:00+00:00", "ok"),
             "# OK\n",
         );
         // missing frontmatter delimiters
@@ -224,14 +215,14 @@ mod tests {
             &dir,
             "2026-05-08",
             "120000-foo",
-            &meta_yaml("20260508T120000-foo", "2026-05-08T12:00:00+00:00", &[], "ok"),
+            &meta_yaml("20260508T120000-foo", "2026-05-08T12:00:00+00:00", "ok"),
             "",
         );
         fixture(
             &dir,
             "2026-05-08",
             "120100-foobar",
-            &meta_yaml("20260508T120100-foobar", "2026-05-08T12:01:00+00:00", &[], "ok"),
+            &meta_yaml("20260508T120100-foobar", "2026-05-08T12:01:00+00:00", "ok"),
             "",
         );
         let notes = walk_notes(&dir, |_, _| {});

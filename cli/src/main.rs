@@ -24,8 +24,6 @@ enum Command {
         #[arg(long)]
         since: Option<String>,
         #[arg(long)]
-        tag: Option<String>,
-        #[arg(long)]
         limit: Option<usize>,
     },
     /// Search notes by case-insensitive substring
@@ -45,9 +43,7 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Ls { since, tag, limit } => {
-            cmd_ls(since.as_deref(), tag.as_deref(), limit)
-        }
+        Command::Ls { since, limit } => cmd_ls(since.as_deref(), limit),
         Command::Show { id } => cmd_show(&id),
         Command::Find { query, open } => cmd_find(&query, open),
         Command::Doctor => doctor::run(),
@@ -66,7 +62,7 @@ fn load_notes_dir() -> Result<PathBuf, String> {
     Ok(Config::expand_home(&config.paths.notes_dir, &home))
 }
 
-fn cmd_ls(since: Option<&str>, tag: Option<&str>, limit: Option<usize>) -> Result<(), String> {
+fn cmd_ls(since: Option<&str>, limit: Option<usize>) -> Result<(), String> {
     let notes_dir = load_notes_dir()?;
     let notes = walk_notes(&notes_dir, |p, e| {
         eprintln!("warning: {}: {e}", p.display())
@@ -86,11 +82,6 @@ fn cmd_ls(since: Option<&str>, tag: Option<&str>, limit: Option<usize>) -> Resul
         .filter(|n| {
             if let Some(c) = cutoff {
                 if n.created.with_timezone(&Utc) < c {
-                    return false;
-                }
-            }
-            if let Some(t) = tag {
-                if !n.meta.tags.iter().any(|nt| nt == t) {
                     return false;
                 }
             }
@@ -117,11 +108,7 @@ fn print_table(notes: &[&LoadedNote]) {
             local.format("%Y-%m-%d %H:%M").to_string()
         };
         let title = title_from_body(&n.body).unwrap_or_else(|| "(untitled)".to_string());
-        let tags = n.meta.tags.join(", ");
-        println!(
-            "{time:<16}  {title:<48}  {tags}",
-            title = truncate(&title, 48)
-        );
+        println!("{time:<16}  {title}", title = truncate(&title, 60));
     }
 }
 
@@ -187,12 +174,6 @@ struct FindHit {
 }
 
 fn note_matches(note: &LoadedNote, needle: &str) -> Vec<FindHit> {
-    let mut frontmatter_haystacks: Vec<String> = Vec::new();
-    frontmatter_haystacks.extend(note.meta.tags.iter().cloned());
-    frontmatter_haystacks.extend(note.meta.people.iter().cloned());
-    frontmatter_haystacks.extend(note.meta.projects.iter().cloned());
-    frontmatter_haystacks.extend(note.meta.places.iter().cloned());
-
     let mut hits = Vec::new();
     let lines: Vec<&str> = note.body.lines().collect();
     let mut emitted_lines: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
@@ -214,18 +195,6 @@ fn note_matches(note: &LoadedNote, needle: &str) -> Vec<FindHit> {
                 context: ctx,
             });
         }
-    }
-
-    if hits.is_empty()
-        && frontmatter_haystacks
-            .iter()
-            .any(|h| h.to_lowercase().contains(needle))
-    {
-        hits.push(FindHit {
-            path: note.path.clone(),
-            line_no: 0,
-            context: vec![(0, format!("(matched in frontmatter: {})", note.meta.id))],
-        });
     }
 
     hits

@@ -13,14 +13,6 @@ pub struct NoteMeta {
     pub created: String,
     pub duration_sec: u32,
     pub audio: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub people: Vec<String>,
-    #[serde(default)]
-    pub projects: Vec<String>,
-    #[serde(default)]
-    pub places: Vec<String>,
     pub model: String,
     pub mmproj: String,
     pub status: NoteStatus,
@@ -49,15 +41,6 @@ pub fn render_note(
     content: NoteContent<'_>,
 ) -> Result<String, String> {
     let status = status_for(&content);
-    let (tags, people, projects, places) = match &content {
-        NoteContent::Ok(note) => (
-            note.tags.clone(),
-            note.entities.people.clone(),
-            note.entities.projects.clone(),
-            note.entities.places.clone(),
-        ),
-        _ => (vec![], vec![], vec![], vec![]),
-    };
     let error = match &content {
         NoteContent::Failed { error } => Some((*error).to_string()),
         NoteContent::Malformed { .. } => Some("model_returned_invalid_json".into()),
@@ -68,10 +51,6 @@ pub fn render_note(
         created: created_rfc3339,
         duration_sec,
         audio,
-        tags,
-        people,
-        projects,
-        places,
         model,
         mmproj,
         status,
@@ -126,16 +105,6 @@ pub fn write_note(
         pathdiff::diff_paths(p, &day_notes_dir).map(|p| p.to_string_lossy().into_owned())
     });
 
-    let (tags, people, projects, places) = match &content {
-        NoteContent::Ok(note) => (
-            note.tags.clone(),
-            note.entities.people.clone(),
-            note.entities.projects.clone(),
-            note.entities.places.clone(),
-        ),
-        _ => (vec![], vec![], vec![], vec![]),
-    };
-
     let error = match &content {
         NoteContent::Failed { error } => Some((*error).to_string()),
         NoteContent::Malformed { .. } => Some("model_returned_invalid_json".into()),
@@ -147,10 +116,6 @@ pub fn write_note(
         created: timestamp.to_rfc3339(),
         duration_sec: overrides.duration_sec,
         audio: audio_rel,
-        tags,
-        people,
-        projects,
-        places,
         model: overrides.model,
         mmproj: overrides.mmproj,
         status,
@@ -211,26 +176,8 @@ fn compose_ok_body(note: &StructuredNote) -> String {
     if !note.title.is_empty() {
         out.push_str(&format!("# {}\n\n", note.title));
     }
-    if !note.summary.is_empty() {
-        out.push_str(&format!("> {}\n\n", note.summary));
-    }
     if !note.cleaned.is_empty() {
-        out.push_str("## Note\n\n");
         out.push_str(note.cleaned.trim_end());
-        out.push_str("\n\n");
-    }
-    if !note.actions.is_empty() {
-        out.push_str("## Actions\n\n");
-        for action in &note.actions {
-            out.push_str(&format!("- [ ] {action}\n"));
-        }
-        out.push('\n');
-    }
-    if !note.questions.is_empty() {
-        out.push_str("## Questions\n\n");
-        for question in &note.questions {
-            out.push_str(&format!("- {question}\n"));
-        }
         out.push('\n');
     }
     out
@@ -239,22 +186,12 @@ fn compose_ok_body(note: &StructuredNote) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Entities;
     use chrono::TimeZone;
 
     fn sample_note() -> StructuredNote {
         StructuredNote {
             title: "Email Sarah about migration".into(),
-            tags: vec!["email".into(), "migration".into()],
-            summary: "Need to email Sarah tomorrow.".into(),
-            cleaned: "Remind me to email Sarah about the migration plan tomorrow morning.".into(),
-            actions: vec!["Email Sarah about migration plan".into()],
-            questions: vec![],
-            entities: Entities {
-                people: vec!["Sarah".into()],
-                projects: vec!["migration".into()],
-                places: vec![],
-            },
+            cleaned: "I want to email Sarah about the migration plan tomorrow morning.".into(),
         }
     }
 
@@ -291,8 +228,12 @@ mod tests {
         assert!(md.contains("status: ok"));
         assert!(!md.contains("error:"));
         assert!(md.contains("# Email Sarah about migration"));
-        assert!(md.contains("- [ ] Email Sarah about migration plan"));
+        assert!(md.contains("I want to email Sarah about the migration plan tomorrow morning."));
+        assert!(!md.contains("## Note"));
+        assert!(!md.contains("## Actions"));
         assert!(!md.contains("## Questions"));
+        assert!(!md.contains("tags:"));
+        assert!(!md.contains("people:"));
         std::fs::remove_dir_all(&tmp).ok();
     }
 

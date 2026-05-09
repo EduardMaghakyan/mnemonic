@@ -1,6 +1,8 @@
 # Mnemonic
 
-A macOS menu-bar app that records short voice notes, transcribes and structures them with **Gemma 4 E4B** (native audio via `llama-server`), and writes Markdown files to disk. Comes with a `mnemonic` CLI for retrieval.
+A macOS menu-bar app that records short voice notes, transcribes them with **Gemma 4 E4B** (native audio via `llama-server`), and writes clean Markdown files to disk. Comes with a `mnemonic` CLI for retrieval.
+
+The model is used for transcription + light cleanup only (filler removal, false-start fixes) — no summaries, action extraction, or entity tagging. Notes read like the user wrote them.
 
 The product is fully local. No network call ever leaves the loopback interface.
 
@@ -76,7 +78,7 @@ The default hotkey is `Ctrl+Option+Space` in **hold-to-record** mode.
 2. Speak
 3. **Release**
 
-A markdown file appears at `~/Mnemonic/notes/YYYY-MM-DD/HHMMSS-{slug}.md` with full YAML frontmatter (id, created, duration, tags, people, projects, places, model, status) and body sections (title, summary, note, actions, questions). The audio is preserved at `~/Mnemonic/audio/YYYY-MM-DD/`.
+A markdown file appears at `~/Mnemonic/notes/YYYY-MM-DD/HHMMSS-{slug}.md` with YAML frontmatter (id, created, duration, audio, model, status) and a body that's just `# Title` followed by the cleaned-up note. The audio is preserved at `~/Mnemonic/audio/YYYY-MM-DD/`.
 
 The tray icon reflects state:
 
@@ -96,7 +98,7 @@ The tray icon reflects state:
 
 | Command | What it does |
 |---|---|
-| `mnemonic ls [--since 7d] [--tag TAG] [--limit N]` | List notes newest-first |
+| `mnemonic ls [--since 7d] [--limit N]` | List notes newest-first |
 | `mnemonic find QUERY [--open]` | Case-insensitive substring search across body and frontmatter; ±1 line of context. `--open` opens the first hit. |
 | `mnemonic show ID` | Print a note by id or unambiguous prefix; uses `bat` if available, else plain print. |
 | `mnemonic doctor` | Health check: config, paths, llama-server, model, mmproj, mic permission. |
@@ -152,11 +154,11 @@ Two ways to wire it up (both zero-code):
 
 What you get out of the box:
 
-- Frontmatter (id, created, duration, status, model, tags, people, projects, places) renders in Obsidian's **Properties** panel.
-- `tags` are indexed into Obsidian's tag pane.
-- The relative `audio:` link in the frontmatter is clickable and plays in Obsidian's audio embed.
+- Frontmatter (id, created, duration, audio, model, status) renders in Obsidian's **Properties** panel.
+- The relative `audio:` link is clickable and plays in Obsidian's audio embed.
+- Notes are clean Markdown (`# Title` + body), so search, backlinks, and graph view all work without any custom parsing.
 
-Not integrated yet: entity backlinks (people/projects/places aren't rendered as `[[wikilinks]]`), and there's no auto-open-in-Obsidian after a recording. Both are possible follow-ups.
+Not integrated yet: no auto-open-in-Obsidian after a recording. Possible follow-up.
 
 ## Troubleshooting
 
@@ -169,6 +171,7 @@ Run `mnemonic doctor` first. It surfaces the most common issues with actionable 
 | Notification "llama-server isn't reachable" | Start `llama-server` per the install steps above |
 | Notes save with `status: failed` | llama-server unreachable; the audio is preserved next to the failed note. Run `mnemonic redo <id>` once the server is back. |
 | Notes save with `status: malformed` | Model returned non-JSON twice. The raw second attempt is preserved in the note body under `## Raw Output`. |
+| Note body has third-party narration ("the speaker is…") | The structuring prompt explicitly forbids this voice, but Gemma can still drift on rare audio. Run `mnemonic redo <id>` to retry — usually clears it. |
 | `mnemonic doctor` reports the model isn't loaded | The `llama-server` is reachable but doesn't have `gemma-4-e4b-it` loaded. Check the `-hf` flag in the server command. |
 
 Logs at `~/Library/Logs/Mnemonic/mnemonic_rCURRENT.log` (rotated at 5 MB, 3 files retained). No log line ever contains transcribed text or model output — paths to saved notes are redacted in logs because the slug is derived from the title.
@@ -179,10 +182,10 @@ Gemma 4 ships in four sizes (E2B, E4B, 26B A4B, 31B). E4B is the **only one with
 
 - E2B and E4B include both vision (~150M params) and audio (~300M params) encoders. The 26B and 31B variants are vision-only.
 - E4B's text quality (MMLU Pro 69.4%, BigBench Extra Hard 33.1%) is the higher of the two audio-capable models.
-- Audio benchmarks: CoVoST 35.54, FLEURS 0.08 — strong enough that ASR + structured-output + entity extraction all happen in a single forward pass.
+- Audio benchmarks: CoVoST 35.54, FLEURS 0.08 — strong enough for ASR + light cleanup in a single forward pass.
 - ~5 GB at Q4_K_M plus ~1 GB mmproj fits comfortably in 16 GB unified memory alongside the rest of the user's working set.
 
-A two-model pipeline (Whisper for ASR, then a text LLM for structuring) was considered and rejected: more moving parts, more latency, more memory, and no quality win for short voice memos.
+A two-model pipeline (Whisper for ASR, then a text LLM for cleanup) was considered and rejected: more moving parts, more latency, more memory, and no quality win for short voice memos.
 
 ## Build from source
 
