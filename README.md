@@ -25,16 +25,29 @@ The release DMG is signed with a Developer ID Application certificate and notari
 
 ### 1. Install Mnemonic
 
-Download the latest `Mnemonic_0.2.1_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page (Apple Silicon only — Intel Macs are not a v1 target). Drag `Mnemonic.app` to `/Applications`.
+Apple Silicon only — Intel Macs are not a v1 target.
 
-On first launch:
+#### Option A: Homebrew (recommended)
 
-- Click the gray dot in your menu bar → **Install CLI**. This symlinks `~/.mnemonic/bin/mnemonic` (no admin password needed). Add the bin to your `PATH` so the CLI is callable from anywhere:
-  ```bash
-  echo 'export PATH="$HOME/.mnemonic/bin:$PATH"' >> ~/.zshrc
-  exec zsh -l   # or open a new terminal window
-  ```
-- macOS will ask for **Microphone** permission the first time you record. Grant it.
+```bash
+brew tap EduardMaghakyan/tap
+brew install --cask mnemonic
+```
+
+This installs `Mnemonic.app` into `/Applications` and symlinks the `mnemonic` CLI onto your Homebrew `PATH` automatically — no need to use the tray's **Install CLI** step.
+
+#### Option B: Direct download
+
+Download the latest `Mnemonic_0.2.1_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page. Drag `Mnemonic.app` to `/Applications`. Then click the gray dot in the menu bar → **Install CLI** to symlink `~/.mnemonic/bin/mnemonic` (no admin password needed) and add it to `PATH`:
+
+```bash
+echo 'export PATH="$HOME/.mnemonic/bin:$PATH"' >> ~/.zshrc
+exec zsh -l   # or open a new terminal window
+```
+
+#### First launch
+
+macOS will ask for **Microphone** permission the first time you record. Grant it.
 
 ### 2. Install and start `llama-server`
 
