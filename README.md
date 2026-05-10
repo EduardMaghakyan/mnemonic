@@ -25,7 +25,7 @@ The release DMG is signed with a Developer ID Application certificate and notari
 
 ### 1. Install Mnemonic
 
-Download the latest `Mnemonic_0.2.0_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page (Apple Silicon only — Intel Macs are not a v1 target). Drag `Mnemonic.app` to `/Applications`.
+Download the latest `Mnemonic_0.2.1_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page (Apple Silicon only — Intel Macs are not a v1 target). Drag `Mnemonic.app` to `/Applications`.
 
 On first launch:
 
