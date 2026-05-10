@@ -29,7 +29,11 @@ Download the latest `Mnemonic_0.2.0_aarch64.dmg` from the [GitHub releases](http
 
 On first launch:
 
-- Click the gray dot in your menu bar → **Install CLI** → authenticate when prompted. This symlinks `/usr/local/bin/mnemonic` so you can call the CLI from anywhere.
+- Click the gray dot in your menu bar → **Install CLI**. This symlinks `~/.mnemonic/bin/mnemonic` (no admin password needed). Add the bin to your `PATH` so the CLI is callable from anywhere:
+  ```bash
+  echo 'export PATH="$HOME/.mnemonic/bin:$PATH"' >> ~/.zshrc
+  exec zsh -l   # or open a new terminal window
+  ```
 - macOS will ask for **Microphone** permission the first time you record. Grant it.
 
 ### 2. Install and start `llama-server`
@@ -96,7 +100,7 @@ The tray icon reflects state:
 ### Tray menu
 
 - **Open config…** — opens `~/.config/mnemonic/config.toml` in your default editor for `.toml`
-- **Install CLI** — symlinks `/usr/local/bin/mnemonic`
+- **Install CLI** — symlinks `~/.mnemonic/bin/mnemonic` (add that dir to your `PATH`)
 - **Reveal log in Finder** — points at `~/Library/Logs/Mnemonic/mnemonic_rCURRENT.log`
 - **Grant Microphone Access…** — opens System Settings → Privacy & Security → Microphone
 - **Quit Mnemonic**

@@ -437,57 +437,37 @@ fn install_cli(app: &AppHandle) {
             return;
         }
     };
-    let target = std::path::Path::new("/usr/local/bin/mnemonic");
-
-    // Try the unprivileged symlink first; on EACCES fall through to osascript.
-    let _ = std::fs::remove_file(target);
-    match std::os::unix::fs::symlink(&cli_src, target) {
-        Ok(()) => {
-            notify(
-                app,
-                "Install CLI",
-                "Symlinked /usr/local/bin/mnemonic. Try `mnemonic ls` in your terminal.",
-            );
+    let home = match std::env::var_os("HOME") {
+        Some(h) => std::path::PathBuf::from(h),
+        None => {
+            notify(app, "Install CLI", "Could not locate $HOME.");
             return;
         }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied
-            || e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            warn!("install_cli: symlink: {e}");
-            notify(app, "Install CLI", &format!("Could not create symlink: {e}"));
-            return;
-        }
-    }
-
-    let script = format!(
-        "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' '{}'\" with administrator privileges with prompt \"Mnemonic wants to install the `mnemonic` CLI to /usr/local/bin\"",
-        cli_src.display(),
-        target.display()
-    );
-    let result = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output();
-    match result {
-        Ok(out) if out.status.success() => notify(
+    };
+    let target = home.join(".mnemonic/bin/mnemonic");
+    let bin_dir = target.parent().unwrap();
+    if let Err(e) = std::fs::create_dir_all(bin_dir) {
+        warn!("install_cli: create_dir_all {}: {e}", bin_dir.display());
+        notify(
             app,
             "Install CLI",
-            "Symlinked /usr/local/bin/mnemonic. Try `mnemonic ls` in your terminal.",
-        ),
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            warn!("install_cli osascript: {stderr}");
-            notify(
-                app,
-                "Install CLI",
-                "Cancelled or failed. Run manually: sudo ln -sf <path> /usr/local/bin/mnemonic",
-            );
-        }
-        Err(e) => {
-            warn!("install_cli: osascript spawn: {e}");
-            notify(app, "Install CLI", &format!("osascript failed: {e}"));
-        }
+            &format!("Could not create {}: {e}", bin_dir.display()),
+        );
+        return;
     }
+
+    let _ = std::fs::remove_file(&target);
+    if let Err(e) = std::os::unix::fs::symlink(&cli_src, &target) {
+        warn!("install_cli: symlink: {e}");
+        notify(app, "Install CLI", &format!("Could not create symlink: {e}"));
+        return;
+    }
+
+    notify(
+        app,
+        "Install CLI",
+        "Installed to ~/.mnemonic/bin/mnemonic. Add `export PATH=\"$HOME/.mnemonic/bin:$PATH\"` to ~/.zshrc, then restart your terminal.",
+    );
 }
 
 fn apply_config_change(app: &AppHandle, new_cfg: Config) {
