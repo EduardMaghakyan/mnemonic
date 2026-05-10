@@ -249,4 +249,4 @@ Without `.env`, `bundle.sh` produces an unsigned `.app` and `.dmg` that work for
 
 ## License
 
-Apache-2.0. See `Cargo.toml` for full attribution.
+MIT. See [LICENSE](LICENSE).
