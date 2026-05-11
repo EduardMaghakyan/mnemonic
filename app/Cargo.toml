@@ -29,3 +29,5 @@ dirs = "5"
 notify = "8"
 log = "0.4"
 flexi_logger = { version = "0.31", default-features = false }
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

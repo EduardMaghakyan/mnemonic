@@ -4,7 +4,6 @@ use log::warn;
 
 pub const START: &str = "Pop";
 pub const STOP: &str = "Bottle";
-pub const IGNORED: &str = "Tink";
 
 pub fn play(name: &str) {
     let path = format!("/System/Library/Sounds/{name}.aiff");

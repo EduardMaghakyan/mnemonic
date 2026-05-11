@@ -149,6 +149,38 @@ A rotating log file at `~/Library/Logs/Mnemonic/mnemonic_rCURRENT.log` (rotated 
 
 No log line may contain transcribed text or the model's structured output. Logs are for engineering, not content.
 
+### 2.11 Image attachments (v0.3+)
+
+Added in v0.3. Optional; never required to record.
+
+- **Capture triggers.** Two paths, both producing the same `(audio, png)` pair downstream:
+  - **A. Clipboard auto-attach.** When the voice hotkey (`hotkey.combo`) is pressed, the app reads `NSPasteboard` once via `arboard::Clipboard::get_image()`. If an image is present, it is PNG-encoded and attached to the recording. If not, the recording proceeds as audio-only.
+  - **B. One-shot screenshot + voice.** A second hotkey (`hotkey.screenshot_combo`, default `ctrl+alt+cmd+space`, empty string disables) spawns `screencapture -i <tempfile>` — macOS's native region-select crosshair without `-c`, so the user's clipboard is not clobbered. The blocking child returns when the user finishes the drag (file written) or hits Escape (file absent). On success the captured bytes are passed directly into the same recording entry point, bypassing the clipboard read; on cancel a "Screenshot cancelled" notification fires and no recording starts. Requires the macOS Screen Recording entitlement, which the system prompts for on first invocation. This hotkey is always toggle-style — `hotkey.mode = hold` does not apply to it.
+- **Hard limits.** After PNG encoding, the image must be ≤ 4 MB. Over the limit: log a warning, skip the image, continue with audio-only.
+- **Storage.** PNG is saved next to the WAV at `audio_dir/YYYY-MM-DD/HHMMSS.png`. Same `keep_raw` gating: if `keep_raw = false`, no PNG is written (and no `![](...)` embed appears in the bullet).
+- **Model request.** Audio and image are sent in the same `/v1/chat/completions` request as two `content` parts: `input_audio` for the WAV, `image_url` (data URL with base64 PNG) for the image. Spike verified Gemma 4 E4B handles both in one forward pass; no two-pass fallback is needed.
+- **Schema extension.** `StructuredNote` gains an optional `image_note` field:
+  ```json
+  { "cleaned": "...", "image_note": null
+                                  | { "kind": "text",    "text": "verbatim text from the image" }
+                                  | { "kind": "caption", "caption": "single-line description" } }
+  ```
+  The model picks exactly one of `null` / `text` / `caption`. Never both. `text` is used when extractable text is present (terminal output, code, error messages, written lists). `caption` is used for visual-only images (chart, mockup, photo). `null` for blank/noise.
+- **Rendering.** The bullet keeps its single-line shape (prose + `[audio]` link). When an image is kept, the `![](rel.png)` embed is appended as its own 2-space indented block separated by a blank line; when `image_note` is present, another blank line and the continuation block follows (fenced code block for `text`, italicised one-liner for `caption`). The 2-space indent keeps every block inside the bullet's list item in CommonMark/Obsidian. Embed and `image_note` are independent: either, both, or neither may appear.
+- **Privacy invariance.** Image bytes never leave loopback; they travel only to `127.0.0.1:5809`. The privacy guarantees in §4 hold unchanged.
+
+### 2.12 Recording queue (v0.4+)
+
+Added in v0.4. Decouples "user stopped speaking" from "model finished structuring."
+
+- **Disk layout.** Each pending recording is a directory under `paths.inbox_dir` (default `~/Mnemonic/inbox`). The directory contains `manifest.json` (`{ "schema_version": 1, "recorded_at": "<RFC3339>" }`), `audio.wav`, and optionally `image.png`. The dir name begins with a UTC compact-RFC3339 timestamp so lexicographic sort = chronological order.
+- **Atomic enqueue.** Files are staged under `inbox/.partial-<id>/` and the dir is renamed to its final name only after all writes flush. Scanner skips `.partial-*`.
+- **Stop semantics.** On recording stop the audio capture drains and the WAV is encoded; the result is written to the inbox via the atomic enqueue, then the recorder state flips back to Idle. A second recording can start before the first has been structured.
+- **Worker.** A single long-lived task pulls jobs oldest-first via `inbox::scan`, calls `structure_audio` once per job, and runs the same `append_entry` path the synchronous v0.3 flow used. After a successful append the inbox dir is removed.
+- **Failure handling.** On `structure_audio` failure the existing `NoteContent::Failed` path writes a `_recording failed: …_` stub bullet; the WAV/PNG still land in `audio_dir/` per `keep_raw`. The inbox dir is then removed — no retries, no inbox accumulation. `mnemonic redo ID` is still the path for retrying a specific recording later.
+- **Crash recovery.** On app startup the worker scans `inbox/` before accepting new signals. Anything left from a previous session (crash, kill, or `llama-server` outage during a session) is processed in chronological order without user intervention.
+- **UI.** A non-clickable tray-menu line at the top shows queue depth: `Queue: idle` when empty, `Queue: N waiting` otherwise. The tray icon itself remains binary (gray = Idle, red = Recording); there is no longer a "Processing" color.
+
 ---
 
 ## 3. CLI requirements (v1)

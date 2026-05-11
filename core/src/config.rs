@@ -44,12 +44,16 @@ pub enum HotkeyMode {
 pub struct HotkeySection {
     pub combo: String,
     pub mode: HotkeyMode,
+    /// Optional combo that triggers `screencapture -i` and then auto-starts a
+    /// recording with the captured image attached. Empty string disables it.
+    pub screenshot_combo: String,
 }
 impl Default for HotkeySection {
     fn default() -> Self {
         Self {
             combo: "ctrl+alt+space".into(),
             mode: HotkeyMode::Hold,
+            screenshot_combo: "ctrl+alt+cmd+space".into(),
         }
     }
 }
@@ -69,12 +73,14 @@ impl Default for AudioSection {
 pub struct PathsSection {
     pub notes_dir: String,
     pub audio_dir: String,
+    pub inbox_dir: String,
 }
 impl Default for PathsSection {
     fn default() -> Self {
         Self {
             notes_dir: "~/Mnemonic/notes".into(),
             audio_dir: "~/Mnemonic/audio".into(),
+            inbox_dir: "~/Mnemonic/inbox".into(),
         }
     }
 }
@@ -175,6 +181,20 @@ mod tests {
         assert_eq!(Config::expand_home("~/Mnemonic", home), Path::new("/Users/alice/Mnemonic"));
         assert_eq!(Config::expand_home("~", home), Path::new("/Users/alice"));
         assert_eq!(Config::expand_home("/abs/path", home), Path::new("/abs/path"));
+    }
+
+    #[test]
+    fn screenshot_combo_defaults_when_omitted() {
+        let toml = "[hotkey]\ncombo = \"ctrl+alt+space\"\nmode = \"hold\"\n";
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.hotkey.screenshot_combo, "ctrl+alt+cmd+space");
+    }
+
+    #[test]
+    fn screenshot_combo_accepts_empty_string_to_disable() {
+        let toml = "[hotkey]\nscreenshot_combo = \"\"\n";
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.hotkey.screenshot_combo, "");
     }
 
     #[test]

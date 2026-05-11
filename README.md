@@ -38,7 +38,7 @@ This installs `Mnemonic.app` into `/Applications` and symlinks the `mnemonic` CL
 
 #### Option B: Direct download
 
-Download the latest `Mnemonic_0.2.1_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page. Drag `Mnemonic.app` to `/Applications`. Then click the gray dot in the menu bar → **Install CLI** to symlink `~/.mnemonic/bin/mnemonic` (no admin password needed) and add it to `PATH`:
+Download the latest `Mnemonic_0.4.0_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page. Drag `Mnemonic.app` to `/Applications`. Then click the gray dot in the menu bar → **Install CLI** to symlink `~/.mnemonic/bin/mnemonic` (no admin password needed) and add it to `PATH`:
 
 ```bash
 echo 'export PATH="$HOME/.mnemonic/bin:$PATH"' >> ~/.zshrc
@@ -103,6 +103,50 @@ A new bullet is appended to today's daily note at `~/Mnemonic/notes/YYYY-MM-DD.m
 ```
 
 Each recording adds one bullet line: `- HH:MM {cleaned text} [audio](...)`. The model is used for transcription + light cleanup only (filler removal, false-start fixes) — no titles, summaries, or extraction. Audio is kept per-recording at `~/Mnemonic/audio/YYYY-MM-DD/HHMMSS.wav`. If `llama-server` is unreachable or returns garbage, a stub bullet (`- HH:MM _recording failed: …_`) is appended so you can see what was lost.
+
+### Queue & crash recovery
+
+Recording is decoupled from structuring. The moment you stop talking, the WAV (and optional screenshot) lands in `~/Mnemonic/inbox/<timestamp>/` and the tray icon returns to gray — you can fire off the next recording immediately, even on a slow local model. A background worker drains the inbox serially, calling `llama-server` one job at a time; bullets stream into the daily note as they complete. The tray menu's first line shows queue depth (`Queue: idle` or `Queue: N waiting`).
+
+If the app quits with jobs still in flight, they stay on disk. On next launch the worker scans `inbox/` and picks up where it left off. Configure the directory with `paths.inbox_dir` in `config.toml`.
+
+### Screenshot attachments
+
+Two ways to attach a screenshot to a recording. Both produce the same bullet shape; pick whichever flow fits the moment.
+
+**One-shot screenshot + voice** — default combo `Control+Option+Command+Space`:
+
+1. Press the screenshot hotkey. macOS shows the region-select crosshair.
+2. Drag a region. Recording starts the instant you release the mouse, with the screenshot already attached.
+3. Press the voice hotkey (or the screenshot hotkey again) to stop. Hit `Escape` during the region-select to cancel the whole thing — no recording is started.
+
+**Auto-attach from clipboard** — same voice hotkey as a plain recording:
+
+1. Take a screenshot to the clipboard: `Control+Shift+Command+4` (drag a region; holding Ctrl keeps it clipboard-only — no Desktop file).
+2. Press the voice hotkey and narrate. A notification confirms "Recording with screenshot attached."
+
+Either flow lands a bullet with the image embedded in today's daily note:
+
+Gemma 4 reads both the audio and the image in a single pass. It either pulls verbatim text out of the image (terminal output, error messages, code) into a fenced code block, or — for visual content — adds a short factual caption underneath the bullet. Both combos are configurable in `config.toml` (`hotkey.combo` and `hotkey.screenshot_combo`); set `screenshot_combo = ""` to disable the one-shot flow.
+
+```markdown
+- 14:35 Look at this — the merge_chunks panic finally reproduces. [audio](../audio/2026-05-10/143500.wav)
+
+  ![](../audio/2026-05-10/143500.png)
+
+  ```text
+  thread 'main' panicked at 'index out of bounds: the len is 0 but the index is 0'
+  src/merge.rs:42:18
+  ```
+
+- 16:12 I want the login button bigger and the input fields a bit closer together. [audio](../audio/2026-05-10/161200.wav)
+
+  ![](../audio/2026-05-10/161200.png)
+
+  *Login form mockup with two input fields stacked above a button.*
+```
+
+The PNG is saved next to the WAV at `~/Mnemonic/audio/YYYY-MM-DD/HHMMSS.png`. Image attachments stay inside the same loopback-only request as the audio — no external network call. The one-shot flow writes the screenshot to a temp file (not the clipboard, so your clipboard contents are preserved); images over 4 MB are dropped with a warning either way. The one-shot flow needs Screen Recording permission — macOS prompts the first time you trigger it.
 
 The tray icon reflects state:
 

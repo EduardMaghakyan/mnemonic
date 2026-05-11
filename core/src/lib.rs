@@ -1,4 +1,5 @@
 mod config;
+pub mod inbox;
 mod llama;
 mod markdown;
 mod notes;
@@ -17,5 +18,5 @@ pub use markdown::{
     append_entry, count_entries, AppendResult, EntryOverrides, NoteContent,
 };
 pub use notes::{load_day, parse_since, walk_days, DailyFile};
-pub use schema::{NoteStatus, StructuredNote};
+pub use schema::{ImageNote, NoteStatus, StructuredNote};
 pub use slug::title_to_slug;

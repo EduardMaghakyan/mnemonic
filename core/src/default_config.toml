@@ -1,6 +1,9 @@
 [hotkey]
 combo = "ctrl+alt+space"
 mode = "hold"
+# Optional: press this combo to enter macOS region-select first, then start
+# recording with the screenshot attached. Set to "" to disable.
+screenshot_combo = "ctrl+alt+cmd+space"
 
 [audio]
 max_seconds = 300
@@ -9,6 +12,8 @@ keep_raw = true
 [paths]
 notes_dir = "~/Mnemonic/notes"
 audio_dir = "~/Mnemonic/audio"
+# Pending recordings live here until the model finishes structuring them.
+inbox_dir = "~/Mnemonic/inbox"
 
 [model]
 endpoint = "http://127.0.0.1:5809"

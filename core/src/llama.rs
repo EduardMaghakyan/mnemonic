@@ -26,9 +26,10 @@ pub enum StructuringResult {
 
 pub async fn structure_audio(
     wav_bytes: &[u8],
+    image_png: Option<&[u8]>,
     request: &StructureRequest<'_>,
 ) -> StructuringResult {
-    let raw1 = match call_llama(wav_bytes, request, None).await {
+    let raw1 = match call_llama(wav_bytes, image_png, request, None).await {
         Ok(r) => r,
         Err(e) => return StructuringResult::Failed { error: e },
     };
@@ -36,7 +37,7 @@ pub async fn structure_audio(
         return StructuringResult::Ok(note);
     }
 
-    let raw2 = match call_llama(wav_bytes, request, Some(RETRY_REMINDER)).await {
+    let raw2 = match call_llama(wav_bytes, image_png, request, Some(RETRY_REMINDER)).await {
         Ok(r) => r,
         Err(_) => return StructuringResult::Malformed { raw: raw1 },
     };
@@ -48,23 +49,37 @@ pub async fn structure_audio(
 
 async fn call_llama(
     wav_bytes: &[u8],
+    image_png: Option<&[u8]>,
     request: &StructureRequest<'_>,
     extra_reminder: Option<&str>,
 ) -> Result<String, String> {
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(wav_bytes);
-    let mut user_text = String::from("Process this voice memo. Return only the JSON object.");
+    let mut user_text = String::from(if image_png.is_some() {
+        "Process this voice memo. An image is attached. Return only the JSON object."
+    } else {
+        "Process this voice memo. Return only the JSON object."
+    });
     if let Some(reminder) = extra_reminder {
         user_text.push_str("\n\n");
         user_text.push_str(reminder);
     }
+    let mut content = vec![serde_json::json!({
+        "type": "input_audio",
+        "input_audio": { "data": audio_b64, "format": "wav" }
+    })];
+    if let Some(png) = image_png {
+        let img_b64 = base64::engine::general_purpose::STANDARD.encode(png);
+        content.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": format!("data:image/png;base64,{img_b64}") }
+        }));
+    }
+    content.push(serde_json::json!({ "type": "text", "text": user_text }));
     let body = serde_json::json!({
         "model": request.model_name,
         "messages": [
             { "role": "system", "content": SYSTEM_PROMPT },
-            { "role": "user", "content": [
-                { "type": "input_audio", "input_audio": { "data": audio_b64, "format": "wav" } },
-                { "type": "text", "text": user_text }
-            ]}
+            { "role": "user", "content": content }
         ],
         "temperature": 0.2,
         "max_tokens": 2048,

@@ -6,19 +6,20 @@ mod logging;
 mod sounds;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use mnemonic_core::{
-    append_entry, health_check, is_silent, structure_audio, AppendResult, Config, EntryOverrides,
-    HotkeyMode, NoteContent, NoteStatus, StructureRequest, StructuringResult,
+    append_entry, health_check, inbox, is_silent, structure_audio, AppendResult, Config,
+    EntryOverrides, HotkeyMode, NoteContent, NoteStatus, StructureRequest, StructuringResult,
 };
 use log::{error, info, warn};
 use mnemonic_core::permissions::{mic_status, MicStatus, PRIVACY_MIC_PANE};
 use tauri::image::Image;
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Wry};
 use notify::Watcher;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
@@ -34,7 +35,6 @@ const MMPROJ_ID: &str = "mmproj-BF16.gguf";
 enum RecorderState {
     Idle,
     Recording,
-    Processing,
 }
 
 struct AppStateData {
@@ -42,6 +42,10 @@ struct AppStateData {
     last_hotkey: Option<Instant>,
     capture: Option<AudioCapture>,
     recording_id: u64,
+    pending_image_png: Option<Vec<u8>>,
+    /// True while `screencapture -i` is blocking on the user. Guards against
+    /// rapid double-press of the screenshot hotkey spawning two processes.
+    screencap_in_flight: bool,
 }
 
 impl AppStateData {
@@ -51,14 +55,97 @@ impl AppStateData {
             last_hotkey: None,
             capture: None,
             recording_id: 0,
+            pending_image_png: None,
+            screencap_in_flight: false,
         }
     }
+}
+
+const MAX_IMAGE_PNG_BYTES: usize = 4 * 1024 * 1024;
+
+/// If the system clipboard currently holds an image, encode it as a PNG and
+/// return the bytes. Returns `None` for: no image present, encoding failure,
+/// or images that exceed `MAX_IMAGE_PNG_BYTES` after encoding.
+fn read_clipboard_image_png() -> Option<Vec<u8>> {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("clipboard init failed: {e}");
+            return None;
+        }
+    };
+    let img = match clipboard.get_image() {
+        Ok(i) => i,
+        Err(_) => return None,
+    };
+    let width = u32::try_from(img.width).ok()?;
+    let height = u32::try_from(img.height).ok()?;
+    let buf = image::RgbaImage::from_raw(width, height, img.bytes.into_owned())?;
+    let mut out = Vec::with_capacity(width as usize * height as usize);
+    if let Err(e) = image::DynamicImage::ImageRgba8(buf)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+    {
+        warn!("clipboard png encode failed: {e}");
+        return None;
+    }
+    if out.len() > MAX_IMAGE_PNG_BYTES {
+        warn!("clipboard image too large: {} bytes", out.len());
+        return None;
+    }
+    Some(out)
 }
 
 struct ConfigState {
     config: Config,
     current_hotkey: Shortcut,
+    current_screenshot_hotkey: Option<Shortcut>,
     config_path: PathBuf,
+}
+
+/// Managed state shared between the recording-stop path, the inbox worker, and
+/// the tray menu. The worker pulls jobs from disk; recording-stop nudges it via
+/// `tx` after every successful enqueue. `queue_depth` is the visible counter.
+struct WorkerHandle {
+    tx: tokio::sync::mpsc::UnboundedSender<()>,
+    queue_depth: AtomicUsize,
+    queue_item: OnceLock<MenuItem<Wry>>,
+}
+
+impl WorkerHandle {
+    fn refresh_menu_label(&self) {
+        let Some(item) = self.queue_item.get() else {
+            return;
+        };
+        let n = self.queue_depth.load(Ordering::SeqCst);
+        let label = if n == 0 {
+            "Queue: idle".to_string()
+        } else {
+            format!("Queue: {n} waiting")
+        };
+        let _ = item.set_text(&label);
+    }
+}
+
+fn queue_inc(app: &AppHandle) {
+    let wh = app.state::<WorkerHandle>();
+    wh.queue_depth.fetch_add(1, Ordering::SeqCst);
+    wh.refresh_menu_label();
+}
+
+fn queue_dec(app: &AppHandle) {
+    let wh = app.state::<WorkerHandle>();
+    // Saturating-sub via compare_exchange to never underflow.
+    let _ = wh
+        .queue_depth
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            if n == 0 { None } else { Some(n - 1) }
+        });
+    wh.refresh_menu_label();
+}
+
+fn nudge_worker(app: &AppHandle) {
+    let wh = app.state::<WorkerHandle>();
+    let _ = wh.tx.send(());
 }
 
 fn home_dir() -> PathBuf {
@@ -102,7 +189,6 @@ fn icon_for(state: RecorderState) -> Image<'static> {
         // alpha mask is used by macOS, so the RGB here is incidental.
         RecorderState::Idle => render_icon([0, 0, 0]),
         RecorderState::Recording => render_icon([220, 40, 40]),
-        RecorderState::Processing => render_icon([230, 170, 30]),
     }
 }
 
@@ -118,10 +204,43 @@ fn apply_state(app: &AppHandle, new_state: RecorderState) {
     info!("state -> {new_state:?}");
 }
 
-fn handle_hotkey_pressed(app: &AppHandle) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HotkeyKind {
+    Voice,
+    Screenshot,
+}
+
+fn classify_shortcut(app: &AppHandle, shortcut: &Shortcut) -> Option<HotkeyKind> {
+    let cs = app.state::<Mutex<ConfigState>>();
+    let cs = cs.lock().unwrap();
+    if &cs.current_hotkey == shortcut {
+        return Some(HotkeyKind::Voice);
+    }
+    if cs.current_screenshot_hotkey.as_ref() == Some(shortcut) {
+        return Some(HotkeyKind::Screenshot);
+    }
+    None
+}
+
+fn handle_hotkey_pressed(app: &AppHandle, shortcut: &Shortcut) {
+    let Some(kind) = classify_shortcut(app, shortcut) else {
+        return;
+    };
+    match kind {
+        HotkeyKind::Voice => handle_voice_hotkey_pressed(app),
+        HotkeyKind::Screenshot => handle_screenshot_hotkey_pressed(app),
+    }
+}
+
+fn handle_voice_hotkey_pressed(app: &AppHandle) {
     let mode = config_snapshot(app).hotkey.mode;
     let state_mutex = app.state::<Mutex<AppStateData>>();
     let mut s = state_mutex.lock().unwrap();
+
+    if s.screencap_in_flight {
+        info!("voice hotkey ignored: screencap in flight");
+        return;
+    }
 
     if mode == HotkeyMode::Toggle {
         let now = Instant::now();
@@ -137,7 +256,7 @@ fn handle_hotkey_pressed(app: &AppHandle) {
     match (mode, s.state) {
         (_, RecorderState::Idle) => {
             drop(s);
-            try_start_recording(app);
+            try_start_recording(app, None);
         }
         (HotkeyMode::Toggle, RecorderState::Recording) => {
             drop(s);
@@ -147,20 +266,120 @@ fn handle_hotkey_pressed(app: &AppHandle) {
             // Hold mode: a press while already recording is unexpected (key
             // repeat or rapid re-press); ignore silently.
         }
-        (_, RecorderState::Processing) => {
-            info!("hotkey ignored: still processing");
-            sounds::play(sounds::IGNORED);
+    }
+}
+
+fn handle_screenshot_hotkey_pressed(app: &AppHandle) {
+    let state_mutex = app.state::<Mutex<AppStateData>>();
+    let mut s = state_mutex.lock().unwrap();
+
+    if s.screencap_in_flight {
+        info!("screenshot hotkey ignored: screencap already in flight");
+        return;
+    }
+
+    match s.state {
+        RecorderState::Idle => {
+            s.screencap_in_flight = true;
+            drop(s);
+            spawn_screencap_then_record(app.clone());
+        }
+        RecorderState::Recording => {
+            // Toggle stop, regardless of voice-hotkey mode.
+            drop(s);
+            stop_recording(app);
         }
     }
 }
 
-fn handle_hotkey_released(app: &AppHandle) {
+fn handle_hotkey_released(app: &AppHandle, shortcut: &Shortcut) {
+    if classify_shortcut(app, shortcut) != Some(HotkeyKind::Voice) {
+        return;
+    }
     if config_snapshot(app).hotkey.mode == HotkeyMode::Hold {
         stop_recording(app);
     }
 }
 
-fn try_start_recording(app: &AppHandle) {
+fn spawn_screencap_then_record(app: AppHandle) {
+    std::thread::spawn(move || {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let temp_path = std::env::temp_dir().join(format!(
+            "mnemonic-screencap-{pid}-{nanos}.png"
+        ));
+
+        info!("screencap: spawning screencapture -i {temp_path:?}");
+        // `screencapture -i <file>`: interactive region select, write PNG.
+        // No `-c` flag — leave the user's clipboard untouched. The process
+        // blocks until the user finishes the drag or hits Escape.
+        let status = std::process::Command::new("screencapture")
+            .arg("-i")
+            .arg(&temp_path)
+            .status();
+
+        // Always clear the in-flight guard first, regardless of outcome.
+        {
+            let state_mutex = app.state::<Mutex<AppStateData>>();
+            let mut s = state_mutex.lock().unwrap();
+            s.screencap_in_flight = false;
+        }
+
+        let bytes = match status {
+            Ok(_) => match std::fs::read(&temp_path) {
+                Ok(b) if !b.is_empty() => {
+                    let _ = std::fs::remove_file(&temp_path);
+                    Some(b)
+                }
+                _ => {
+                    // File missing or empty: user hit Escape.
+                    let _ = std::fs::remove_file(&temp_path);
+                    None
+                }
+            },
+            Err(e) => {
+                error!("screencap: failed to spawn screencapture: {e}");
+                let _ = std::fs::remove_file(&temp_path);
+                notify(
+                    &app,
+                    "Mnemonic",
+                    "Couldn't launch screencapture. Grant Screen Recording permission in System Settings → Privacy & Security → Screen Recording, then try again.",
+                );
+                return;
+            }
+        };
+
+        match bytes {
+            Some(bytes) if bytes.len() > MAX_IMAGE_PNG_BYTES => {
+                warn!("screencap image too large: {} bytes, dropping", bytes.len());
+                notify(
+                    &app,
+                    "Mnemonic",
+                    "Screenshot too large; recording cancelled.",
+                );
+            }
+            Some(bytes) => {
+                info!("screencap: captured {} bytes; starting recording", bytes.len());
+                // Hop back to the Tauri main thread to start the recording.
+                let app_handle = app.clone();
+                if let Err(e) = app.run_on_main_thread(move || {
+                    try_start_recording(&app_handle, Some(bytes));
+                }) {
+                    error!("screencap: run_on_main_thread failed: {e}");
+                }
+            }
+            None => {
+                info!("screencap: cancelled by user");
+                notify(&app, "Mnemonic", "Screenshot cancelled.");
+            }
+        }
+    });
+}
+
+fn try_start_recording(app: &AppHandle, image_override: Option<Vec<u8>>) {
     if mic_status() == MicStatus::Denied {
         warn!("audio capture skipped: microphone permission denied");
         notify(
@@ -170,6 +389,12 @@ fn try_start_recording(app: &AppHandle) {
         );
         return;
     }
+    let image_png = image_override.or_else(read_clipboard_image_png);
+    let has_image = image_png.is_some();
+    if let Some(bytes) = &image_png {
+        info!("image attached to recording: {} bytes", bytes.len());
+    }
+
     let state_mutex = app.state::<Mutex<AppStateData>>();
     let mut s = state_mutex.lock().unwrap();
     if s.state != RecorderState::Idle {
@@ -179,12 +404,16 @@ fn try_start_recording(app: &AppHandle) {
     match AudioCapture::start() {
         Ok(cap) => {
             s.capture = Some(cap);
+            s.pending_image_png = image_png;
             s.state = RecorderState::Recording;
             s.recording_id = s.recording_id.wrapping_add(1);
             let recording_id = s.recording_id;
             drop(s);
             apply_state(app, RecorderState::Recording);
             arm_max_seconds_timer(app, recording_id);
+            if has_image {
+                notify(app, "Mnemonic", "Recording with screenshot attached.");
+            }
         }
         Err(e) => {
             error!("audio capture failed to start: {e}");
@@ -194,7 +423,7 @@ fn try_start_recording(app: &AppHandle) {
 
 fn stop_recording(app: &AppHandle) {
     let state_mutex = app.state::<Mutex<AppStateData>>();
-    let cap = {
+    let (cap, image_png) = {
         let mut s = state_mutex.lock().unwrap();
         if s.state != RecorderState::Recording {
             return;
@@ -202,17 +431,75 @@ fn stop_recording(app: &AppHandle) {
         let Some(cap) = s.capture.take() else {
             warn!("recording without capture handle");
             s.state = RecorderState::Idle;
+            s.pending_image_png = None;
             return;
         };
-        s.state = RecorderState::Processing;
-        cap
+        let img = s.pending_image_png.take();
+        // Flip to Idle now so the user can fire off the next recording while
+        // the previous one is still being drained + enqueued on a worker task.
+        s.state = RecorderState::Idle;
+        (cap, img)
     };
     sounds::play(sounds::STOP);
-    apply_state(app, RecorderState::Processing);
+    apply_state(app, RecorderState::Idle);
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        run_processing(&app_handle, cap).await;
+        drain_and_enqueue(&app_handle, cap, image_png).await;
     });
+}
+
+/// Drain the audio capture, encode the WAV, and enqueue a job to the inbox.
+/// This is the bridge between "user stopped speaking" and "worker structures
+/// the recording at its own pace."
+async fn drain_and_enqueue(app: &AppHandle, cap: AudioCapture, image_png: Option<Vec<u8>>) {
+    let captured = tokio::task::spawn_blocking(move || cap.stop())
+        .await
+        .unwrap_or_else(|_| CapturedAudio {
+            samples: Vec::new(),
+            sample_rate: audio::TARGET_SAMPLE_RATE,
+        });
+    let duration_sec =
+        ((captured.samples.len() as f64 / captured.sample_rate as f64).round()) as u32;
+    info!(
+        "captured {} samples @ {} Hz ({}s)",
+        captured.samples.len(),
+        captured.sample_rate,
+        duration_sec
+    );
+
+    if captured.samples.is_empty() {
+        info!("captured 0 samples — skipped");
+        notify(app, "Mnemonic", "Silent recording — nothing saved.");
+        return;
+    }
+
+    let wav = match audio::encode_wav(&captured.samples, captured.sample_rate) {
+        Ok(wav) => wav,
+        Err(e) => {
+            error!("wav encode failed: {e}");
+            notify(app, "Mnemonic", &format!("Recording could not be encoded: {e}"));
+            return;
+        }
+    };
+
+    let cfg = config_snapshot(app);
+    let inbox_dir = Config::expand_home(&cfg.paths.inbox_dir, &home_dir());
+    let recorded_at = chrono::Local::now();
+    match inbox::enqueue(&inbox_dir, recorded_at, &wav, image_png.as_deref()) {
+        Ok(job) => {
+            info!("enqueued job: {}", logging::redact(&job.dir));
+            queue_inc(app);
+            nudge_worker(app);
+        }
+        Err(e) => {
+            error!("inbox enqueue failed: {e}");
+            notify(
+                app,
+                "Mnemonic",
+                &format!("Could not queue recording: {e}"),
+            );
+        }
+    }
 }
 
 fn arm_max_seconds_timer(app: &AppHandle, recording_id: u64) {
@@ -236,45 +523,36 @@ fn config_snapshot(app: &AppHandle) -> Config {
     app.state::<Mutex<ConfigState>>().lock().unwrap().config.clone()
 }
 
-async fn run_processing(app: &AppHandle, cap: AudioCapture) {
+/// Process one queued job: call llama-server, write the daily bullet (or stub
+/// on failure), then remove the inbox dir. Same observable outcome as the
+/// previous synchronous `run_processing`, just one extra hop through disk.
+async fn process_job(app: &AppHandle, job: inbox::InboxJob) {
     let started = Instant::now();
-    let captured = tokio::task::spawn_blocking(move || cap.stop())
-        .await
-        .unwrap_or_else(|_| CapturedAudio {
-            samples: Vec::new(),
-            sample_rate: audio::TARGET_SAMPLE_RATE,
-        });
-    let duration_sec =
-        ((captured.samples.len() as f64 / captured.sample_rate as f64).round()) as u32;
-    info!(
-        "captured {} samples @ {} Hz ({}s)",
-        captured.samples.len(),
-        captured.sample_rate,
-        duration_sec
-    );
-
-    if captured.samples.is_empty() {
-        info!("captured 0 samples — skipped");
-        notify(app, "Mnemonic", "Silent recording — nothing saved.");
-        apply_idle(app);
-        return;
-    }
+    let wav = match inbox::read_wav(&job) {
+        Ok(b) => b,
+        Err(e) => {
+            error!("inbox read wav failed for {:?}: {e}", job.dir);
+            // Drop the job — re-running it would just fail again. Leave the
+            // dir for manual recovery only if we genuinely can't proceed.
+            let _ = inbox::complete(&job);
+            queue_dec(app);
+            return;
+        }
+    };
+    let image_png = inbox::read_image(&job);
+    let recorded_at = job.recorded_at;
 
     let cfg = config_snapshot(app);
     let home = home_dir();
     let notes_dir = Config::expand_home(&cfg.paths.notes_dir, &home);
     let audio_dir = Config::expand_home(&cfg.paths.audio_dir, &home);
 
-    let wav = match audio::encode_wav(&captured.samples, captured.sample_rate) {
-        Ok(wav) => wav,
-        Err(e) => {
-            error!("wav encode failed: {e}");
-            notify(app, "Mnemonic", &format!("Recording could not be encoded: {e}"));
-            apply_idle(app);
-            return;
-        }
-    };
-    info!("wav: {} bytes; calling llama-server", wav.len());
+    info!(
+        "process_job: {} wav={}B image={}B",
+        logging::redact(&job.dir),
+        wav.len(),
+        image_png.as_ref().map(|b| b.len()).unwrap_or(0)
+    );
 
     let endpoint = format!(
         "{}/v1/chat/completions",
@@ -286,14 +564,15 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
         timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
         thinking: cfg.model.thinking,
     };
-    let outcome = structure_audio(&wav, &req).await;
+    let outcome = structure_audio(&wav, image_png.as_deref(), &req).await;
     let elapsed = started.elapsed().as_secs_f32();
 
     if let StructuringResult::Ok(note) = &outcome {
         if is_silent(note) {
             info!("structured ({elapsed:.1}s) status=silent — skipped");
             notify(app, "Mnemonic", "Silent recording — nothing saved.");
-            apply_idle(app);
+            let _ = inbox::complete(&job);
+            queue_dec(app);
             return;
         }
     }
@@ -303,18 +582,19 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
         model: cfg.model.name.clone(),
         mmproj: MMPROJ_ID.into(),
     };
-    let now = chrono::Local::now();
 
+    let image_for_disk = image_png.as_deref();
     let write_result: Result<AppendResult, String> = match &outcome {
         StructuringResult::Ok(note) => {
             info!("structured ({elapsed:.1}s) status=ok");
             append_entry(
                 &notes_dir,
                 &audio_dir,
-                now,
+                recorded_at,
                 NoteContent::Ok(note),
                 overrides,
                 &wav,
+                image_for_disk,
             )
         }
         StructuringResult::Malformed { raw } => {
@@ -322,10 +602,11 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
             append_entry(
                 &notes_dir,
                 &audio_dir,
-                now,
+                recorded_at,
                 NoteContent::Malformed { raw },
                 overrides,
                 &wav,
+                image_for_disk,
             )
         }
         StructuringResult::Failed { error } => {
@@ -333,10 +614,11 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
             append_entry(
                 &notes_dir,
                 &audio_dir,
-                now,
+                recorded_at,
                 NoteContent::Failed { error },
                 overrides,
                 &wav,
+                image_for_disk,
             )
         }
     };
@@ -348,23 +630,54 @@ async fn run_processing(app: &AppHandle, cap: AudioCapture) {
                 info!("audio: {}", logging::redact(audio_path));
             }
             notify_for_write(app, &outcome, &written);
+            let _ = inbox::complete(&job);
         }
         Err(e) => {
             error!("write failed: {e}");
             notify(app, "Mnemonic", &format!("Could not save note: {e}"));
+            // Leave the job in inbox so it can be retried next run.
         }
     }
-
-    apply_idle(app);
+    queue_dec(app);
 }
 
-fn apply_idle(app: &AppHandle) {
-    let state_mutex = app.state::<Mutex<AppStateData>>();
-    {
-        let mut s = state_mutex.lock().unwrap();
-        s.state = RecorderState::Idle;
+/// Long-lived task spawned at startup. Drains the inbox serially, blocking on
+/// the `rx` channel when the queue is empty.
+async fn worker_loop(app: AppHandle, mut rx: tokio::sync::mpsc::UnboundedReceiver<()>) {
+    let cfg = config_snapshot(&app);
+    let inbox_dir = Config::expand_home(&cfg.paths.inbox_dir, &home_dir());
+
+    // Crash recovery: prime queue depth with whatever's already on disk.
+    let recovered = inbox::scan(&inbox_dir);
+    if !recovered.is_empty() {
+        info!("crash recovery: {} job(s) in inbox", recovered.len());
+        let wh = app.state::<WorkerHandle>();
+        wh.queue_depth
+            .store(recovered.len(), Ordering::SeqCst);
+        wh.refresh_menu_label();
     }
-    apply_state(app, RecorderState::Idle);
+
+    loop {
+        // Process everything currently on disk.
+        loop {
+            let next = inbox::scan(&inbox_dir).into_iter().next();
+            match next {
+                Some(job) => process_job(&app, job).await,
+                None => break,
+            }
+        }
+        // Idle: block until somebody nudges us.
+        match rx.recv().await {
+            Some(()) => {
+                // Coalesce: drain any other pending signals before rescanning.
+                while rx.try_recv().is_ok() {}
+            }
+            None => {
+                info!("worker channel closed; exiting loop");
+                return;
+            }
+        }
+    }
 }
 
 fn notify(app: &AppHandle, title: &str, body: &str) {
@@ -500,8 +813,38 @@ fn apply_config_change(app: &AppHandle, new_cfg: Config) {
             ),
         }
     }
+    if cs.config.hotkey.screenshot_combo != new_cfg.hotkey.screenshot_combo {
+        if let Some(old) = cs.current_screenshot_hotkey.take() {
+            let _ = app.global_shortcut().unregister(old);
+        }
+        match parse_screenshot_combo(&new_cfg.hotkey.screenshot_combo) {
+            Ok(Some(new_hk)) => match app.global_shortcut().register(new_hk) {
+                Ok(()) => {
+                    info!("screenshot hotkey -> {}", new_cfg.hotkey.screenshot_combo);
+                    cs.current_screenshot_hotkey = Some(new_hk);
+                }
+                Err(e) => {
+                    error!("screenshot hotkey register failed: {e}");
+                }
+            },
+            Ok(None) => info!("screenshot hotkey disabled"),
+            Err(e) => warn!(
+                "invalid screenshot hotkey {:?}: {e}; keeping disabled",
+                new_cfg.hotkey.screenshot_combo
+            ),
+        }
+    }
     cs.config = new_cfg;
     info!("config reloaded");
+}
+
+/// Parse the optional screenshot combo. Empty string → `Ok(None)` (disabled).
+fn parse_screenshot_combo(combo: &str) -> Result<Option<Shortcut>, String> {
+    if combo.trim().is_empty() {
+        Ok(None)
+    } else {
+        hotkey::parse_hotkey(combo).map(Some)
+    }
 }
 
 fn spawn_startup_health_check(app: AppHandle) {
@@ -592,36 +935,66 @@ fn main() {
         );
         hotkey::parse_hotkey("ctrl+alt+space").unwrap()
     });
+    let initial_screenshot_hotkey =
+        match parse_screenshot_combo(&initial_config.hotkey.screenshot_combo) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(
+                    "invalid screenshot hotkey {:?}: {e}; disabling",
+                    initial_config.hotkey.screenshot_combo
+                );
+                None
+            }
+        };
 
     let config_state = ConfigState {
         config: initial_config,
         current_hotkey: initial_hotkey,
+        current_screenshot_hotkey: initial_screenshot_hotkey,
         config_path: config_path.clone(),
     };
+
+    let (worker_tx, worker_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let worker_handle = WorkerHandle {
+        tx: worker_tx,
+        queue_depth: AtomicUsize::new(0),
+        queue_item: OnceLock::new(),
+    };
+    let worker_rx_cell: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>> =
+        std::sync::Mutex::new(Some(worker_rx));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, _shortcut, event| match event.state() {
-                    ShortcutState::Pressed => handle_hotkey_pressed(app),
-                    ShortcutState::Released => handle_hotkey_released(app),
+                .with_handler(move |app, shortcut, event| match event.state() {
+                    ShortcutState::Pressed => handle_hotkey_pressed(app, shortcut),
+                    ShortcutState::Released => handle_hotkey_released(app, shortcut),
                 })
                 .build(),
         )
         .manage(Mutex::new(AppStateData::new()))
         .manage(Mutex::new(config_state))
+        .manage(worker_handle)
+        .manage(worker_rx_cell)
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let app_handle = app.handle().clone();
             let cfg_state = app_handle.state::<Mutex<ConfigState>>();
-            let (current_hotkey, cfg_path) = {
+            let (current_hotkey, screenshot_hotkey, cfg_path) = {
                 let cs = cfg_state.lock().unwrap();
-                (cs.current_hotkey, cs.config_path.clone())
+                (
+                    cs.current_hotkey,
+                    cs.current_screenshot_hotkey,
+                    cs.config_path.clone(),
+                )
             };
 
+            let queue_status = MenuItemBuilder::with_id("queue_status", "Queue: idle")
+                .enabled(false)
+                .build(app)?;
             let open_cfg = MenuItemBuilder::with_id("open_config", "Open config…").build(app)?;
             let install_cli_item =
                 MenuItemBuilder::with_id("install_cli", "Install CLI").build(app)?;
@@ -631,6 +1004,8 @@ fn main() {
                 MenuItemBuilder::with_id("grant_mic", "Grant Microphone Access…").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit Mnemonic").build(app)?;
             let menu = MenuBuilder::new(app)
+                .item(&queue_status)
+                .separator()
                 .item(&open_cfg)
                 .item(&install_cli_item)
                 .item(&reveal_log)
@@ -639,6 +1014,13 @@ fn main() {
                 .separator()
                 .item(&quit)
                 .build()?;
+
+            // Park the queue-status menu item on the WorkerHandle so background
+            // tasks can update its label as the queue depth changes.
+            {
+                let wh = app_handle.state::<WorkerHandle>();
+                let _ = wh.queue_item.set(queue_status.clone());
+            }
 
             let menu_cfg_path = cfg_path.clone();
             let menu_log_path = logging::log_file(&home_dir());
@@ -657,12 +1039,28 @@ fn main() {
                 .build(app)?;
 
             app.global_shortcut().register(current_hotkey)?;
+            if let Some(hk) = screenshot_hotkey {
+                if let Err(e) = app.global_shortcut().register(hk) {
+                    error!("screenshot hotkey register failed at startup: {e}");
+                }
+            }
             info!(
-                "mnemonic-app: tray armed; hotkey {current_hotkey:?}; config at {cfg_path:?}"
+                "mnemonic-app: tray armed; hotkey {current_hotkey:?}; screenshot hotkey {screenshot_hotkey:?}; config at {cfg_path:?}"
             );
 
             spawn_config_watcher(app_handle.clone(), cfg_path);
-            spawn_startup_health_check(app_handle);
+            spawn_startup_health_check(app_handle.clone());
+
+            // Spin up the inbox worker. The receiver is parked in a Mutex<Option<_>>
+            // during build so we can take ownership here exactly once.
+            let rx_cell = app_handle
+                .state::<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>>();
+            if let Some(rx) = rx_cell.lock().unwrap().take() {
+                let worker_app = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    worker_loop(worker_app, rx).await;
+                });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

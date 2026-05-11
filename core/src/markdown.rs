@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 
-use crate::{NoteStatus, StructuredNote};
+use crate::{ImageNote, NoteStatus, StructuredNote};
 
 pub struct EntryOverrides {
     pub keep_raw: bool,
@@ -13,6 +13,7 @@ pub struct EntryOverrides {
 pub struct AppendResult {
     pub daily_path: PathBuf,
     pub audio_path: Option<PathBuf>,
+    pub image_path: Option<PathBuf>,
     pub status: NoteStatus,
 }
 
@@ -32,6 +33,7 @@ pub fn append_entry(
     content: NoteContent<'_>,
     overrides: EntryOverrides,
     wav_bytes: &[u8],
+    image_png: Option<&[u8]>,
 ) -> Result<AppendResult, String> {
     let date = timestamp.format("%Y-%m-%d").to_string();
     let time_part = timestamp.format("%H%M%S").to_string();
@@ -46,11 +48,21 @@ pub fn append_entry(
         None
     };
 
+    let image_path = if overrides.keep_raw && image_png.is_some() {
+        let day_audio_dir = audio_dir.join(&date);
+        Some(day_audio_dir.join(format!("{time_part}.png")))
+    } else {
+        None
+    };
+
     let audio_rel = audio_path.as_ref().and_then(|p| {
         pathdiff::diff_paths(p, notes_dir).map(|p| p.to_string_lossy().into_owned())
     });
+    let image_rel = image_path.as_ref().and_then(|p| {
+        pathdiff::diff_paths(p, notes_dir).map(|p| p.to_string_lossy().into_owned())
+    });
 
-    let line = compose_bullet(timestamp, &content, audio_rel.as_deref());
+    let line = compose_bullet(timestamp, &content, audio_rel.as_deref(), image_rel.as_deref());
 
     std::fs::create_dir_all(notes_dir).map_err(|e| format!("mkdir notes: {e}"))?;
     let existing = std::fs::read_to_string(&daily_path).unwrap_or_default();
@@ -68,8 +80,19 @@ pub fn append_entry(
         }
         std::fs::write(audio_path, wav_bytes).map_err(|e| format!("write audio: {e}"))?;
     }
+    if let (Some(path), Some(png)) = (&image_path, image_png) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir image: {e}"))?;
+        }
+        std::fs::write(path, png).map_err(|e| format!("write image: {e}"))?;
+    }
 
-    Ok(AppendResult { daily_path, audio_path, status })
+    Ok(AppendResult {
+        daily_path,
+        audio_path,
+        image_path,
+        status,
+    })
 }
 
 fn status_for(content: &NoteContent<'_>) -> NoteStatus {
@@ -84,26 +107,51 @@ fn compose_bullet(
     timestamp: DateTime<Local>,
     content: &NoteContent<'_>,
     audio_rel: Option<&str>,
+    image_rel: Option<&str>,
 ) -> String {
     let hhmm = timestamp.format("%H:%M").to_string();
     let mut bullet = format!("- {hhmm} ");
-    match content {
+    let image_note: Option<&ImageNote> = match content {
         NoteContent::Ok(note) => {
             let text = collapse_whitespace(&note.cleaned);
             bullet.push_str(&text);
+            note.image_note.as_ref()
         }
         NoteContent::Failed { error } => {
             let safe = collapse_whitespace(error);
             bullet.push_str(&format!("_recording failed: {safe}_"));
+            None
         }
         NoteContent::Malformed { .. } => {
             bullet.push_str("_structuring failed: model returned non-JSON twice_");
+            None
         }
-    }
+    };
     if let Some(rel) = audio_rel {
         bullet.push_str(&format!(" [audio]({rel})"));
     }
     bullet.push('\n');
+    if let Some(rel) = image_rel {
+        bullet.push_str(&format!("\n  ![]({rel})\n"));
+    }
+    if let Some(note) = image_note {
+        bullet.push('\n');
+        match note {
+            ImageNote::Text { text } => {
+                bullet.push_str("  ```text\n");
+                for line in text.lines() {
+                    bullet.push_str("  ");
+                    bullet.push_str(line);
+                    bullet.push('\n');
+                }
+                bullet.push_str("  ```\n");
+            }
+            ImageNote::Caption { caption } => {
+                let safe = collapse_whitespace(caption);
+                bullet.push_str(&format!("  *{safe}*\n"));
+            }
+        }
+    }
     bullet
 }
 
@@ -136,6 +184,7 @@ mod tests {
     fn sample_note() -> StructuredNote {
         StructuredNote {
             cleaned: "I want to email Sarah about the migration plan tomorrow morning.".into(),
+            image_note: None,
         }
     }
 
@@ -161,11 +210,13 @@ mod tests {
             NoteContent::Ok(&sample_note()),
             overrides(),
             b"fake wav",
+            None,
         )
         .unwrap();
 
         assert_eq!(result.status, NoteStatus::Ok);
         assert!(result.audio_path.is_some());
+        assert!(result.image_path.is_none());
         assert_eq!(result.daily_path, tmp.join("notes").join("2026-05-08.md"));
 
         let md = std::fs::read_to_string(&result.daily_path).unwrap();
@@ -186,6 +237,7 @@ mod tests {
             NoteContent::Ok(&sample_note()),
             overrides(),
             b"a",
+            None,
         )
         .unwrap();
         let result = append_entry(
@@ -194,9 +246,11 @@ mod tests {
             ts(15, 12),
             NoteContent::Ok(&StructuredNote {
                 cleaned: "This is a new node.".into(),
+                image_note: None,
             }),
             overrides(),
             b"b",
+            None,
         )
         .unwrap();
 
@@ -215,9 +269,11 @@ mod tests {
             ts(14, 35),
             NoteContent::Ok(&StructuredNote {
                 cleaned: "First sentence.\n\nSecond sentence.".into(),
+                image_note: None,
             }),
             overrides(),
             b"a",
+            None,
         )
         .unwrap();
         let md = std::fs::read_to_string(&result.daily_path).unwrap();
@@ -236,6 +292,7 @@ mod tests {
             NoteContent::Failed { error: "connection refused" },
             overrides(),
             b"fake wav",
+            None,
         )
         .unwrap();
         assert_eq!(result.status, NoteStatus::Failed);
@@ -254,11 +311,81 @@ mod tests {
             NoteContent::Malformed { raw: "{nope" },
             overrides(),
             b"fake wav",
+            None,
         )
         .unwrap();
         assert_eq!(result.status, NoteStatus::Malformed);
         let md = std::fs::read_to_string(&result.daily_path).unwrap();
         assert!(md.starts_with("- 14:35 _structuring failed:"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn appends_image_text_bullet() {
+        let tmp = tempdir();
+        let note = StructuredNote {
+            cleaned: "Look at this — the merge_chunks panic finally reproduces.".into(),
+            image_note: Some(ImageNote::Text {
+                text: "thread 'main' panicked at 'index out of bounds'\nsrc/merge.rs:42:18".into(),
+            }),
+        };
+        let result = append_entry(
+            &tmp.join("notes"),
+            &tmp.join("audio"),
+            ts(14, 35),
+            NoteContent::Ok(&note),
+            overrides(),
+            b"fake wav",
+            Some(b"\x89PNG\r\n\x1a\nfake"),
+        )
+        .unwrap();
+        assert!(result.image_path.is_some());
+        let md = std::fs::read_to_string(&result.daily_path).unwrap();
+        let expected = "- 14:35 Look at this — the merge_chunks panic finally reproduces. [audio](../audio/2026-05-08/143500.wav)\n\n  ![](../audio/2026-05-08/143500.png)\n\n  ```text\n  thread 'main' panicked at 'index out of bounds'\n  src/merge.rs:42:18\n  ```\n";
+        assert_eq!(md, expected);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn appends_image_caption_bullet() {
+        let tmp = tempdir();
+        let note = StructuredNote {
+            cleaned: "I want the login button bigger.".into(),
+            image_note: Some(ImageNote::Caption {
+                caption: "Login form mockup with two input fields stacked above a button.".into(),
+            }),
+        };
+        let result = append_entry(
+            &tmp.join("notes"),
+            &tmp.join("audio"),
+            ts(14, 35),
+            NoteContent::Ok(&note),
+            overrides(),
+            b"fake wav",
+            Some(b"\x89PNG\r\n\x1a\nfake"),
+        )
+        .unwrap();
+        let md = std::fs::read_to_string(&result.daily_path).unwrap();
+        let expected = "- 14:35 I want the login button bigger. [audio](../audio/2026-05-08/143500.wav)\n\n  ![](../audio/2026-05-08/143500.png)\n\n  *Login form mockup with two input fields stacked above a button.*\n";
+        assert_eq!(md, expected);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn no_image_embed_when_image_bytes_absent() {
+        let tmp = tempdir();
+        let result = append_entry(
+            &tmp.join("notes"),
+            &tmp.join("audio"),
+            ts(14, 35),
+            NoteContent::Ok(&sample_note()),
+            overrides(),
+            b"fake wav",
+            None,
+        )
+        .unwrap();
+        let md = std::fs::read_to_string(&result.daily_path).unwrap();
+        assert!(!md.contains("![]"), "unexpected image embed: {md:?}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

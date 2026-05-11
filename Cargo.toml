@@ -3,7 +3,7 @@ resolver = "2"
 members = ["core", "cli", "app"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 authors = ["Eduard Maghakyan <edi.maghakyan@gmail.com>"]
