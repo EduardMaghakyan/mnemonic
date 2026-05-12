@@ -16,6 +16,8 @@ pub struct Config {
     pub paths: PathsSection,
     #[serde(default)]
     pub model: ModelSection,
+    #[serde(default)]
+    pub intents: IntentsSection,
 }
 
 impl Default for Config {
@@ -25,6 +27,7 @@ impl Default for Config {
             audio: AudioSection::default(),
             paths: PathsSection::default(),
             model: ModelSection::default(),
+            intents: IntentsSection::default(),
         }
     }
 }
@@ -81,6 +84,28 @@ impl Default for PathsSection {
             notes_dir: "~/Mnemonic/notes".into(),
             audio_dir: "~/Mnemonic/audio".into(),
             inbox_dir: "~/Mnemonic/inbox".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct IntentsSection {
+    /// Opt-in. When false (default), recordings never trigger Shortcut intents.
+    pub enabled: bool,
+    /// Whitelist of macOS Shortcut names that intents may fire. The model
+    /// cannot fire any name outside this list, even if it emits one.
+    pub allowed_shortcuts: Vec<String>,
+    /// Window after an intent fires during which the tray "Undo last action"
+    /// item is enabled.
+    pub undo_window_ms: u64,
+}
+impl Default for IntentsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_shortcuts: Vec::new(),
+            undo_window_ms: 5000,
         }
     }
 }
@@ -188,6 +213,31 @@ mod tests {
         let toml = "[hotkey]\ncombo = \"ctrl+alt+space\"\nmode = \"hold\"\n";
         let cfg: Config = toml::from_str(toml).unwrap();
         assert_eq!(cfg.hotkey.screenshot_combo, "ctrl+alt+cmd+space");
+    }
+
+    #[test]
+    fn intents_default_to_disabled_and_empty_allowlist() {
+        let cfg = Config::default();
+        assert!(!cfg.intents.enabled);
+        assert!(cfg.intents.allowed_shortcuts.is_empty());
+        assert_eq!(cfg.intents.undo_window_ms, 5000);
+    }
+
+    #[test]
+    fn intents_roundtrip_with_populated_allowlist() {
+        let toml = r#"
+[intents]
+enabled = true
+allowed_shortcuts = ["create-reminder", "schedule-event"]
+undo_window_ms = 3000
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert!(cfg.intents.enabled);
+        assert_eq!(
+            cfg.intents.allowed_shortcuts,
+            vec!["create-reminder".to_string(), "schedule-event".to_string()]
+        );
+        assert_eq!(cfg.intents.undo_window_ms, 3000);
     }
 
     #[test]

@@ -3,16 +3,18 @@
 mod audio;
 mod hotkey;
 mod logging;
+mod shortcuts;
 mod sounds;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use mnemonic_core::{
-    append_entry, health_check, inbox, is_silent, structure_audio, AppendResult, Config,
-    EntryOverrides, HotkeyMode, NoteContent, NoteStatus, StructureRequest, StructuringResult,
+    append_entry, extract_intent, health_check, inbox, is_silent, structure_audio, AppendResult,
+    Config, EntryOverrides, ExecutedIntent, HotkeyMode, Intent, IntentRequest, IntentResult,
+    NoteContent, NoteStatus, StructureRequest, StructuringResult,
 };
 use log::{error, info, warn};
 use mnemonic_core::permissions::{mic_status, MicStatus, PRIVACY_MIC_PANE};
@@ -105,10 +107,25 @@ struct ConfigState {
 /// Managed state shared between the recording-stop path, the inbox worker, and
 /// the tray menu. The worker pulls jobs from disk; recording-stop nudges it via
 /// `tx` after every successful enqueue. `queue_depth` is the visible counter.
+/// `undo_state` carries the most recent fired intent so the tray-menu Undo
+/// item can revert it within `undo_window_ms`.
 struct WorkerHandle {
     tx: tokio::sync::mpsc::UnboundedSender<()>,
     queue_depth: AtomicUsize,
     queue_item: OnceLock<MenuItem<Wry>>,
+    undo_state: Mutex<Option<UndoState>>,
+    undo_item: OnceLock<MenuItem<Wry>>,
+    /// Monotonically incremented each time a new intent fires. The sleep task
+    /// that disables the Undo item only does so if the seq it captured at
+    /// arm-time still matches — prevents an old sleep from clearing a fresh
+    /// fire's state.
+    undo_seq: AtomicU64,
+}
+
+struct UndoState {
+    shortcut: String,
+    input: String,
+    seq: u64,
 }
 
 impl WorkerHandle {
@@ -146,6 +163,76 @@ fn queue_dec(app: &AppHandle) {
 fn nudge_worker(app: &AppHandle) {
     let wh = app.state::<WorkerHandle>();
     let _ = wh.tx.send(());
+}
+
+/// Record a freshly-fired intent so the tray-menu Undo button can revert it,
+/// and arm a sleep task that clears the state after `undo_window_ms`.
+fn arm_undo(app: &AppHandle, shortcut: String, input: String, window: Duration) {
+    let wh = app.state::<WorkerHandle>();
+    let seq = wh.undo_seq.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    {
+        let mut state = wh.undo_state.lock().unwrap();
+        *state = Some(UndoState {
+            shortcut: shortcut.clone(),
+            input,
+            seq,
+        });
+    }
+    if let Some(item) = wh.undo_item.get() {
+        let _ = item.set_text(format!("Undo: {shortcut}"));
+        let _ = item.set_enabled(true);
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(window).await;
+        let wh = app_handle.state::<WorkerHandle>();
+        let mut state = wh.undo_state.lock().unwrap();
+        if state.as_ref().map(|s| s.seq) == Some(seq) {
+            *state = None;
+            if let Some(item) = wh.undo_item.get() {
+                let _ = item.set_text("Undo last action");
+                let _ = item.set_enabled(false);
+            }
+        }
+    });
+}
+
+/// Invoked when the user clicks the tray-menu Undo item. If the window hasn't
+/// expired, run `undo-<shortcut>` via the Shortcuts CLI and clear the state.
+fn invoke_undo(app: &AppHandle) {
+    let taken = {
+        let wh = app.state::<WorkerHandle>();
+        let mut state = wh.undo_state.lock().unwrap();
+        state.take()
+    };
+    let Some(undo) = taken else {
+        info!("undo clicked but no state armed");
+        return;
+    };
+    if let Some(item) = app.state::<WorkerHandle>().undo_item.get() {
+        let _ = item.set_text("Undo last action");
+        let _ = item.set_enabled(false);
+    }
+    let undo_name = format!("undo-{}", undo.shortcut);
+    info!("undo: running shortcut {undo_name:?}");
+    match shortcuts::run_shortcut(&undo_name, &undo.input) {
+        Ok(()) => notify(
+            app,
+            "Mnemonic",
+            &format!("Undid \"{}\".", undo.shortcut),
+        ),
+        Err(e) => {
+            warn!("undo shortcut failed: {e}");
+            notify(
+                app,
+                "Mnemonic",
+                &format!(
+                    "Couldn't run \"{undo_name}\". Define this Shortcut in Shortcuts.app to enable undo."
+                ),
+            );
+        }
+    }
 }
 
 fn home_dir() -> PathBuf {
@@ -577,6 +664,29 @@ async fn process_job(app: &AppHandle, job: inbox::InboxJob) {
         }
     }
 
+    // Fork to intent extraction on Ok structuring, gated by config. Holds
+    // owned strings so we can borrow them into both the bullet render and any
+    // future undo plumbing.
+    let fired_intent = match &outcome {
+        StructuringResult::Ok(note)
+            if cfg.intents.enabled && !cfg.intents.allowed_shortcuts.is_empty() =>
+        {
+            try_fire_intent(
+                app,
+                &note.cleaned,
+                &cfg.intents.allowed_shortcuts,
+                &endpoint,
+                &cfg.model.name,
+            )
+            .await
+        }
+        _ => None,
+    };
+    let executed_intent = fired_intent.as_ref().map(|f| ExecutedIntent {
+        shortcut: &f.shortcut,
+        input: &f.input,
+    });
+
     let overrides = EntryOverrides {
         keep_raw: cfg.audio.keep_raw,
         model: cfg.model.name.clone(),
@@ -584,6 +694,7 @@ async fn process_job(app: &AppHandle, job: inbox::InboxJob) {
     };
 
     let image_for_disk = image_png.as_deref();
+    let intent_for_disk = executed_intent.as_ref();
     let write_result: Result<AppendResult, String> = match &outcome {
         StructuringResult::Ok(note) => {
             info!("structured ({elapsed:.1}s) status=ok");
@@ -595,6 +706,7 @@ async fn process_job(app: &AppHandle, job: inbox::InboxJob) {
                 overrides,
                 &wav,
                 image_for_disk,
+                intent_for_disk,
             )
         }
         StructuringResult::Malformed { raw } => {
@@ -607,6 +719,7 @@ async fn process_job(app: &AppHandle, job: inbox::InboxJob) {
                 overrides,
                 &wav,
                 image_for_disk,
+                None,
             )
         }
         StructuringResult::Failed { error } => {
@@ -619,6 +732,7 @@ async fn process_job(app: &AppHandle, job: inbox::InboxJob) {
                 overrides,
                 &wav,
                 image_for_disk,
+                None,
             )
         }
     };
@@ -639,6 +753,94 @@ async fn process_job(app: &AppHandle, job: inbox::InboxJob) {
         }
     }
     queue_dec(app);
+}
+
+/// Side effect that successfully fired for a recording. Owned so the bullet
+/// render and (later) the tray-menu undo state can both refer to the same
+/// data without sharing a lifetime to a temporary.
+struct FiredIntent {
+    shortcut: String,
+    input: String,
+}
+
+const INTENT_TIMEOUT_SECS: u64 = 30;
+
+/// Attempt to extract and fire an intent from the cleaned transcript. Returns
+/// `Some(FiredIntent)` only when the second LLM call returned a `run_shortcut`
+/// pointing at an allowlisted name AND `shortcuts run` succeeded. All other
+/// outcomes (NoIntent, Malformed, Failed, whitelist miss, executor failure)
+/// log and return None — the bullet still gets written, just without a `↳`
+/// continuation.
+async fn try_fire_intent(
+    app: &AppHandle,
+    cleaned: &str,
+    allowed_shortcuts: &[String],
+    endpoint: &str,
+    model_name: &str,
+) -> Option<FiredIntent> {
+    let req = IntentRequest {
+        endpoint,
+        model_name,
+        timeout: Duration::from_secs(INTENT_TIMEOUT_SECS),
+    };
+    let started = Instant::now();
+    let result = extract_intent(cleaned, allowed_shortcuts, &req).await;
+    let elapsed = started.elapsed().as_secs_f32();
+    match result {
+        IntentResult::Matched(Intent::RunShortcut { shortcut, input }) => {
+            if !allowed_shortcuts.iter().any(|s| s == &shortcut) {
+                warn!(
+                    "intent rejected ({elapsed:.1}s): shortcut {shortcut:?} not in allowlist"
+                );
+                return None;
+            }
+            info!("intent ({elapsed:.1}s) shortcut={shortcut:?}");
+            match shortcuts::run_shortcut(&shortcut, &input) {
+                Ok(()) => {
+                    let undo_window = Duration::from_millis(
+                        config_snapshot(app).intents.undo_window_ms.max(500),
+                    );
+                    arm_undo(app, shortcut.clone(), input.clone(), undo_window);
+                    notify(
+                        app,
+                        "Mnemonic",
+                        &format!(
+                            "Ran shortcut \"{shortcut}\": {input}. Click \"Undo: {shortcut}\" in the tray within {}s to revert.",
+                            undo_window.as_secs()
+                        ),
+                    );
+                    Some(FiredIntent { shortcut, input })
+                }
+                Err(e) => {
+                    warn!("shortcut run failed: {e}");
+                    notify(
+                        app,
+                        "Mnemonic",
+                        &format!("Couldn't run shortcut \"{shortcut}\": {e}"),
+                    );
+                    None
+                }
+            }
+        }
+        // extract_intent collapses Intent::None to IntentResult::NoIntent, so
+        // this branch is unreachable in practice but the match must be total.
+        IntentResult::Matched(Intent::None) => None,
+        IntentResult::NoIntent => {
+            info!("intent ({elapsed:.1}s) status=none");
+            None
+        }
+        IntentResult::Malformed { raw } => {
+            warn!(
+                "intent ({elapsed:.1}s) malformed: {}",
+                raw.chars().take(120).collect::<String>()
+            );
+            None
+        }
+        IntentResult::Failed { error } => {
+            warn!("intent ({elapsed:.1}s) failed: {error}");
+            None
+        }
+    }
 }
 
 /// Long-lived task spawned at startup. Drains the inbox serially, blocking on
@@ -847,6 +1049,36 @@ fn parse_screenshot_combo(combo: &str) -> Result<Option<Shortcut>, String> {
     }
 }
 
+/// Fire one throwaway `extract_intent` call at startup so the first real
+/// intent doesn't pay the llama-server cold-prime tax. Per the Phase 0 spike,
+/// warm calls are ~1.7s but the very first one can be 6–7s; this amortises it
+/// to a moment when nobody is waiting. No-op when intents are disabled.
+fn spawn_intent_warmer(app: AppHandle) {
+    let cfg = config_snapshot(&app);
+    if !cfg.intents.enabled || cfg.intents.allowed_shortcuts.is_empty() {
+        return;
+    }
+    let endpoint = format!(
+        "{}/v1/chat/completions",
+        cfg.model.endpoint.trim_end_matches('/')
+    );
+    let model_name = cfg.model.name.clone();
+    let allowlist = cfg.intents.allowed_shortcuts.clone();
+    tauri::async_runtime::spawn(async move {
+        let started = Instant::now();
+        let req = IntentRequest {
+            endpoint: &endpoint,
+            model_name: &model_name,
+            timeout: Duration::from_secs(20),
+        };
+        let _ = extract_intent("ping", &allowlist, &req).await;
+        info!(
+            "intent warmer: primed in {:.1}s",
+            started.elapsed().as_secs_f32()
+        );
+    });
+}
+
 fn spawn_startup_health_check(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let endpoint = config_snapshot(&app).model.endpoint.clone();
@@ -959,6 +1191,9 @@ fn main() {
         tx: worker_tx,
         queue_depth: AtomicUsize::new(0),
         queue_item: OnceLock::new(),
+        undo_state: Mutex::new(None),
+        undo_item: OnceLock::new(),
+        undo_seq: AtomicU64::new(0),
     };
     let worker_rx_cell: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>> =
         std::sync::Mutex::new(Some(worker_rx));
@@ -995,6 +1230,9 @@ fn main() {
             let queue_status = MenuItemBuilder::with_id("queue_status", "Queue: idle")
                 .enabled(false)
                 .build(app)?;
+            let undo_last = MenuItemBuilder::with_id("undo_last", "Undo last action")
+                .enabled(false)
+                .build(app)?;
             let open_cfg = MenuItemBuilder::with_id("open_config", "Open config…").build(app)?;
             let install_cli_item =
                 MenuItemBuilder::with_id("install_cli", "Install CLI").build(app)?;
@@ -1005,6 +1243,7 @@ fn main() {
             let quit = MenuItemBuilder::with_id("quit", "Quit Mnemonic").build(app)?;
             let menu = MenuBuilder::new(app)
                 .item(&queue_status)
+                .item(&undo_last)
                 .separator()
                 .item(&open_cfg)
                 .item(&install_cli_item)
@@ -1015,11 +1254,13 @@ fn main() {
                 .item(&quit)
                 .build()?;
 
-            // Park the queue-status menu item on the WorkerHandle so background
-            // tasks can update its label as the queue depth changes.
+            // Park the queue-status and undo menu items on the WorkerHandle so
+            // background tasks can update them as queue depth and intent
+            // firings change.
             {
                 let wh = app_handle.state::<WorkerHandle>();
                 let _ = wh.queue_item.set(queue_status.clone());
+                let _ = wh.undo_item.set(undo_last.clone());
             }
 
             let menu_cfg_path = cfg_path.clone();
@@ -1033,6 +1274,7 @@ fn main() {
                     "install_cli" => install_cli(app),
                     "reveal_log" => reveal_in_finder(&menu_log_path),
                     "grant_mic" => open_url(PRIVACY_MIC_PANE),
+                    "undo_last" => invoke_undo(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -1050,6 +1292,7 @@ fn main() {
 
             spawn_config_watcher(app_handle.clone(), cfg_path);
             spawn_startup_health_check(app_handle.clone());
+            spawn_intent_warmer(app_handle.clone());
 
             // Spin up the inbox worker. The receiver is parked in a Mutex<Option<_>>
             // during build so we can take ownership here exactly once.

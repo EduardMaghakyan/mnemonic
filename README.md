@@ -38,7 +38,7 @@ This installs `Mnemonic.app` into `/Applications` and symlinks the `mnemonic` CL
 
 #### Option B: Direct download
 
-Download the latest `Mnemonic_0.4.0_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page. Drag `Mnemonic.app` to `/Applications`. Then click the gray dot in the menu bar → **Install CLI** to symlink `~/.mnemonic/bin/mnemonic` (no admin password needed) and add it to `PATH`:
+Download the latest `Mnemonic_0.5.0_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page. Drag `Mnemonic.app` to `/Applications`. Then click the gray dot in the menu bar → **Install CLI** to symlink `~/.mnemonic/bin/mnemonic` (no admin password needed) and add it to `PATH`:
 
 ```bash
 echo 'export PATH="$HOME/.mnemonic/bin:$PATH"' >> ~/.zshrc
@@ -154,8 +154,45 @@ The tray icon reflects state:
 - **red** — recording
 - **yellow** — processing (model is structuring)
 
+### Intent routing (v0.5+)
+
+Mnemonic can route the transcribed text through a second, fast Gemma 4 call that detects whether your note is asking the OS to do something — *"remind me to call Sarah at 3 PM"*, *"schedule a 1:1 with Priya for Thursday at 4"* — and if so, fires a macOS Shortcut you've defined. Opt-in, whitelisted, undoable.
+
+**1. Build a Shortcut.** Open Shortcuts.app → New Shortcut. Name it `create-reminder`. Set *Receive: Text* from *Anywhere* (left sidebar). Add a *Reminders → Add new reminder* action with the title set to the *Shortcut Input*. Save.
+
+**2. Configure Mnemonic.** Edit `~/.config/mnemonic/config.toml`:
+
+```toml
+[intents]
+enabled = true
+allowed_shortcuts = ["create-reminder"]
+undo_window_ms = 5000
+```
+
+Mnemonic will only ever fire Shortcuts whose names appear in `allowed_shortcuts` — even if the model hallucinates an unfamiliar name, it's refused before reaching the OS. Save the file; the app hot-reloads.
+
+**3. Record.** Say *"Remind me to grab oat milk on the way home."* You'll get:
+
+- A new Reminder in the macOS Reminders app
+- A tray notification (*"Ran shortcut create-reminder…"*)
+- A daily-note bullet with an audit-trail continuation line:
+
+  ```markdown
+  - 14:35 Remind me to grab oat milk on the way home. [audio](../audio/2026-05-13/143500.wav)
+
+    ↳ Ran shortcut "create-reminder": grab oat milk on the way home
+  ```
+
+- A 5-second window where the tray menu shows **Undo: create-reminder** — clicking it runs an `undo-create-reminder` Shortcut if you've defined one (e.g., one that deletes the most recent Reminder).
+
+Thought-dumps that *sound* actionable but aren't (*"I was thinking about reminding Sarah, but maybe she already knows"*) score as `{tool: "none"}` and produce a plain bullet — no side effect. Validated at 100% across 30 hand-labelled transcripts during the Phase 0 spike.
+
+The intent call adds ~1.7s per recording to the worker queue. Set `enabled = false` to skip it entirely.
+
 ### Tray menu
 
+- **Queue: idle / N waiting** — disabled informational item showing the recording-queue depth
+- **Undo: \<shortcut>** — appears for `undo_window_ms` (default 5s) after an intent fires; click to run the paired `undo-<shortcut>` Shortcut
 - **Open config…** — opens `~/.config/mnemonic/config.toml` in your default editor for `.toml`
 - **Install CLI** — symlinks `~/.mnemonic/bin/mnemonic` (add that dir to your `PATH`)
 - **Reveal log in Finder** — points at `~/Library/Logs/Mnemonic/mnemonic_rCURRENT.log`

@@ -23,6 +23,15 @@ pub enum NoteContent<'a> {
     Failed { error: &'a str },
 }
 
+/// A side effect that successfully fired for a recording. Rendered as a
+/// `↳ Ran shortcut "<name>": <input>` continuation under the bullet, so the
+/// note remains the source of truth for *what fired* in addition to what
+/// the user said.
+pub struct ExecutedIntent<'a> {
+    pub shortcut: &'a str,
+    pub input: &'a str,
+}
+
 /// Append a single recording's bullet entry to the daily file at
 /// `notes_dir/YYYY-MM-DD.md`, creating the file if it doesn't exist. Audio is
 /// kept per-recording at `audio_dir/YYYY-MM-DD/HHMMSS.wav`.
@@ -34,6 +43,7 @@ pub fn append_entry(
     overrides: EntryOverrides,
     wav_bytes: &[u8],
     image_png: Option<&[u8]>,
+    executed_intent: Option<&ExecutedIntent<'_>>,
 ) -> Result<AppendResult, String> {
     let date = timestamp.format("%Y-%m-%d").to_string();
     let time_part = timestamp.format("%H%M%S").to_string();
@@ -62,7 +72,13 @@ pub fn append_entry(
         pathdiff::diff_paths(p, notes_dir).map(|p| p.to_string_lossy().into_owned())
     });
 
-    let line = compose_bullet(timestamp, &content, audio_rel.as_deref(), image_rel.as_deref());
+    let line = compose_bullet(
+        timestamp,
+        &content,
+        audio_rel.as_deref(),
+        image_rel.as_deref(),
+        executed_intent,
+    );
 
     std::fs::create_dir_all(notes_dir).map_err(|e| format!("mkdir notes: {e}"))?;
     let existing = std::fs::read_to_string(&daily_path).unwrap_or_default();
@@ -108,6 +124,7 @@ fn compose_bullet(
     content: &NoteContent<'_>,
     audio_rel: Option<&str>,
     image_rel: Option<&str>,
+    executed_intent: Option<&ExecutedIntent<'_>>,
 ) -> String {
     let hhmm = timestamp.format("%H:%M").to_string();
     let mut bullet = format!("- {hhmm} ");
@@ -151,6 +168,14 @@ fn compose_bullet(
                 bullet.push_str(&format!("  *{safe}*\n"));
             }
         }
+    }
+    if let Some(intent) = executed_intent {
+        let safe_input = collapse_whitespace(intent.input);
+        bullet.push('\n');
+        bullet.push_str(&format!(
+            "  ↳ Ran shortcut \"{}\": {safe_input}\n",
+            intent.shortcut
+        ));
     }
     bullet
 }
@@ -211,6 +236,7 @@ mod tests {
             overrides(),
             b"fake wav",
             None,
+            None,
         )
         .unwrap();
 
@@ -238,6 +264,7 @@ mod tests {
             overrides(),
             b"a",
             None,
+            None,
         )
         .unwrap();
         let result = append_entry(
@@ -250,6 +277,7 @@ mod tests {
             }),
             overrides(),
             b"b",
+            None,
             None,
         )
         .unwrap();
@@ -274,6 +302,7 @@ mod tests {
             overrides(),
             b"a",
             None,
+            None,
         )
         .unwrap();
         let md = std::fs::read_to_string(&result.daily_path).unwrap();
@@ -293,6 +322,7 @@ mod tests {
             overrides(),
             b"fake wav",
             None,
+            None,
         )
         .unwrap();
         assert_eq!(result.status, NoteStatus::Failed);
@@ -311,6 +341,7 @@ mod tests {
             NoteContent::Malformed { raw: "{nope" },
             overrides(),
             b"fake wav",
+            None,
             None,
         )
         .unwrap();
@@ -337,6 +368,7 @@ mod tests {
             overrides(),
             b"fake wav",
             Some(b"\x89PNG\r\n\x1a\nfake"),
+            None,
         )
         .unwrap();
         assert!(result.image_path.is_some());
@@ -363,6 +395,7 @@ mod tests {
             overrides(),
             b"fake wav",
             Some(b"\x89PNG\r\n\x1a\nfake"),
+            None,
         )
         .unwrap();
         let md = std::fs::read_to_string(&result.daily_path).unwrap();
@@ -382,10 +415,68 @@ mod tests {
             overrides(),
             b"fake wav",
             None,
+            None,
         )
         .unwrap();
         let md = std::fs::read_to_string(&result.daily_path).unwrap();
         assert!(!md.contains("![]"), "unexpected image embed: {md:?}");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn appends_intent_continuation() {
+        let tmp = tempdir();
+        let intent = ExecutedIntent {
+            shortcut: "create-reminder",
+            input: "Call Sarah at 3 PM",
+        };
+        let result = append_entry(
+            &tmp.join("notes"),
+            &tmp.join("audio"),
+            ts(14, 35),
+            NoteContent::Ok(&StructuredNote {
+                cleaned: "Remind me to call Sarah at 3 PM.".into(),
+                image_note: None,
+            }),
+            overrides(),
+            b"fake wav",
+            None,
+            Some(&intent),
+        )
+        .unwrap();
+        let md = std::fs::read_to_string(&result.daily_path).unwrap();
+        let expected = "- 14:35 Remind me to call Sarah at 3 PM. [audio](../audio/2026-05-08/143500.wav)\n\n  ↳ Ran shortcut \"create-reminder\": Call Sarah at 3 PM\n";
+        assert_eq!(md, expected);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn intent_continuation_renders_under_image_note() {
+        let tmp = tempdir();
+        let note = StructuredNote {
+            cleaned: "I want the login button bigger.".into(),
+            image_note: Some(ImageNote::Caption {
+                caption: "Login form mockup with two input fields stacked above a button.".into(),
+            }),
+        };
+        let intent = ExecutedIntent {
+            shortcut: "create-reminder",
+            input: "Make login button bigger",
+        };
+        let result = append_entry(
+            &tmp.join("notes"),
+            &tmp.join("audio"),
+            ts(14, 35),
+            NoteContent::Ok(&note),
+            overrides(),
+            b"fake wav",
+            Some(b"\x89PNG\r\n\x1a\nfake"),
+            Some(&intent),
+        )
+        .unwrap();
+        let md = std::fs::read_to_string(&result.daily_path).unwrap();
+        let expected = "- 14:35 I want the login button bigger. [audio](../audio/2026-05-08/143500.wav)\n\n  ![](../audio/2026-05-08/143500.png)\n\n  *Login form mockup with two input fields stacked above a button.*\n\n  ↳ Ran shortcut \"create-reminder\": Make login button bigger\n";
+        assert_eq!(md, expected);
         std::fs::remove_dir_all(&tmp).ok();
     }
 

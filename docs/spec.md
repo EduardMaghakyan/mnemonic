@@ -181,6 +181,25 @@ Added in v0.4. Decouples "user stopped speaking" from "model finished structurin
 - **Crash recovery.** On app startup the worker scans `inbox/` before accepting new signals. Anything left from a previous session (crash, kill, or `llama-server` outage during a session) is processed in chronological order without user intervention.
 - **UI.** A non-clickable tray-menu line at the top shows queue depth: `Queue: idle` when empty, `Queue: N waiting` otherwise. The tray icon itself remains binary (gray = Idle, red = Recording); there is no longer a "Processing" color.
 
+### 2.13 Intent routing (v0.5+)
+
+Added in v0.5. Forks the worker pipeline so a successful transcription can trigger a macOS Shortcut without polluting the daily-note source-of-truth.
+
+- **Config.** `[intents]` section with `enabled` (default `false` — opt-in), `allowed_shortcuts: Vec<String>` (whitelist — required), `undo_window_ms` (default `5000`).
+- **Pipeline.** After `structure_audio` returns `Ok` (silence check has passed) and the config gates above are satisfied, the worker calls `extract_intent(cleaned, allowed_shortcuts, &req)`. The intent request always uses `chat_template_kwargs: { enable_thinking: false }` and `max_tokens: 512` per the Phase 0 spike findings (`docs/spike/intent/PHASE-0-INTENT-FINDINGS.md`).
+- **Schema.** The model returns one of:
+  ```json
+  { "tool": "run_shortcut", "shortcut": "<name from allowlist>", "input": "<one-line task>" }
+  { "tool": "none" }
+  ```
+- **Whitelist enforcement.** Defence in depth: even if the model emits a shortcut name outside `allowed_shortcuts`, the executor refuses to fire it. No process is spawned for unknown names.
+- **Execution.** `app/src/shortcuts.rs::run_shortcut(name, input)` invokes `Command::new("shortcuts").args(["run", name])` with `input` piped via stdin. No string interpolation into the command line — eliminates AppleScript-style injection bugs by construction. Hard 5-second timeout on the child to avoid hung Shortcut prompts stalling the worker.
+- **Rendering.** On successful fire, `append_entry` receives an `ExecutedIntent { shortcut, input }` which renders as a 2-space-indented `↳ Ran shortcut "<name>": <input>` continuation line under the bullet, after any image embed and image_note block. Notes remain the source of truth for what side effects fired.
+- **Undo.** After a successful fire, the tray menu's *Undo* item is enabled with text `Undo: <shortcut>` for `undo_window_ms`. Click runs `undo-<shortcut>` via the same `run_shortcut` executor (no separate allowlist entry needed for the paired undo). After the window expires, the item disables and the action is committed.
+- **Failure modes.** `IntentResult::NoIntent` / `Malformed` / `Failed` / executor errors all log a warning and proceed without a continuation line — the bullet still gets written. `mnemonic redo ID` does *not* re-fire intents (one-shot at first transcription).
+- **Cold-start warmer.** At app startup, after `health_check`, a throwaway `extract_intent("ping", &allowlist, ...)` call primes llama-server so the first real intent doesn't pay the cold-prime tax (per spike, 6.6s cold vs 1.7s warm). No-op when intents are disabled.
+- **Privacy invariance.** Intent calls hit `127.0.0.1:5809` only, same loopback as the structuring call. §4 guarantees hold.
+
 ---
 
 ## 3. CLI requirements (v1)

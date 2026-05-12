@@ -19,3 +19,12 @@ inbox_dir = "~/Mnemonic/inbox"
 endpoint = "http://127.0.0.1:5809"
 name = "gemma-4-e4b-it"
 thinking = true
+
+# Opt-in: route detected intents to macOS Shortcuts after a recording is
+# transcribed. Define the Shortcut in Shortcuts.app, then list its name here.
+# A `↳ Ran shortcut "<name>"` line is appended under the daily-note bullet,
+# and a tray menu item lets you undo within `undo_window_ms` ms.
+[intents]
+enabled = false
+allowed_shortcuts = []
+undo_window_ms = 5000
