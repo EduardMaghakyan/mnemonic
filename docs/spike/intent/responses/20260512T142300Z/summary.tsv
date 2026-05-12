@@ -1,0 +1,31 @@
+id	label	expected	actual_tool	actual_shortcut	elapsed_ms	http	match
+act-01	actionable	create-reminder	parse_error	null	8499	200	MISS
+act-02	actionable	create-reminder			7721	200	MISS
+act-03	actionable	create-reminder	run_shortcut	create-reminder	7092	200	HIT
+act-04	actionable	schedule-event	run_shortcut	schedule-event	7505	200	HIT
+act-05	actionable	schedule-event	run_shortcut	schedule-event	7512	200	HIT
+act-06	actionable	schedule-event	parse_error	null	7721	200	MISS
+act-07	actionable	send-message			7732	200	MISS
+act-08	actionable	send-message	parse_error	null	7641	200	MISS
+act-09	actionable	create-reminder	run_shortcut	create-reminder	6824	200	HIT
+act-10	actionable	create-reminder			7670	200	MISS
+act-11	actionable	schedule-event			7471	200	MISS
+act-12	actionable	create-reminder	run_shortcut	create-reminder	6872	200	HIT
+act-13	actionable	send-message	run_shortcut	send-message	6326	200	HIT
+act-14	actionable	create-reminder	run_shortcut	create-reminder	6596	200	HIT
+act-15	actionable	schedule-event	parse_error	null	7510	200	MISS
+non-01	none	null	none	null	4044	200	HIT
+non-02	none	null	none	null	3102	200	HIT
+non-03	none	null	none	null	3029	200	HIT
+non-04	none	null	none	null	3245	200	HIT
+non-05	none	null	none	null	6555	200	HIT
+non-06	none	null	none	null	3563	200	HIT
+non-07	none	null	none	null	2820	200	HIT
+non-08	none	null	none	null	2325	200	HIT
+non-09	none	null	none	null	6728	200	HIT
+non-10	none	null	none	null	5389	200	HIT
+non-11	none	null	none	null	5883	200	HIT
+non-12	none	null	none	null	3683	200	HIT
+non-13	none	null	none	null	3641	200	HIT
+non-14	none	null	none	null	4118	200	HIT
+non-15	none	null	none	null	3381	200	HIT

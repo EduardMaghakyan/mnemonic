@@ -1,0 +1,30 @@
+{"id": "act-01", "label": "actionable", "expected_shortcut": "create-reminder", "text": "Remind me to call Sarah at 3 PM tomorrow about the migration plan."}
+{"id": "act-02", "label": "actionable", "expected_shortcut": "create-reminder", "text": "Put on my todo list: review the Q3 budget before Friday."}
+{"id": "act-03", "label": "actionable", "expected_shortcut": "create-reminder", "text": "I need to remember to pick up dry cleaning on the way home."}
+{"id": "act-04", "label": "actionable", "expected_shortcut": "schedule-event", "text": "Schedule a meeting with the design team for next Tuesday at 10 AM."}
+{"id": "act-05", "label": "actionable", "expected_shortcut": "schedule-event", "text": "Block off two hours Thursday afternoon to write the architecture doc."}
+{"id": "act-06", "label": "actionable", "expected_shortcut": "schedule-event", "text": "Add a calendar event for the dentist appointment on the 22nd at 2 PM."}
+{"id": "act-07", "label": "actionable", "expected_shortcut": "send-message", "text": "Text Mom that I'll be home for dinner around seven."}
+{"id": "act-08", "label": "actionable", "expected_shortcut": "send-message", "text": "Send a message to Jake saying I got the parts in and we can ship Monday."}
+{"id": "act-09", "label": "actionable", "expected_shortcut": "create-reminder", "text": "Don't let me forget to file the tax extension paperwork tomorrow morning."}
+{"id": "act-10", "label": "actionable", "expected_shortcut": "create-reminder", "text": "Make a note to follow up with the recruiter on Wednesday."}
+{"id": "act-11", "label": "actionable", "expected_shortcut": "schedule-event", "text": "Book a 30-minute slot with my manager early next week for the review."}
+{"id": "act-12", "label": "actionable", "expected_shortcut": "create-reminder", "text": "Remind me at five to check the dishwasher detergent supply."}
+{"id": "act-13", "label": "actionable", "expected_shortcut": "send-message", "text": "Message Priya: the merge_chunks bug is fixed, please review the PR."}
+{"id": "act-14", "label": "actionable", "expected_shortcut": "create-reminder", "text": "Add to my reminders: order more coffee filters before they run out."}
+{"id": "act-15", "label": "actionable", "expected_shortcut": "schedule-event", "text": "Schedule lunch with David for the 15th at noon."}
+{"id": "non-01", "label": "none", "expected_shortcut": null, "text": "I was thinking I should probably remind Sarah about the migration but maybe she already knows."}
+{"id": "non-02", "label": "none", "expected_shortcut": null, "text": "The merge_chunks panic finally reproduces with the index-out-of-bounds path."}
+{"id": "non-03", "label": "none", "expected_shortcut": null, "text": "Interesting that the latency on the second call is roughly the same as the first."}
+{"id": "non-04", "label": "none", "expected_shortcut": null, "text": "I hate Mondays. Why are we even having this meeting."}
+{"id": "non-05", "label": "none", "expected_shortcut": null, "text": "The login form on the mockup has the button too small. We should make it bigger."}
+{"id": "non-06", "label": "none", "expected_shortcut": null, "text": "Random thought: maybe the right move is to drop the second pass entirely."}
+{"id": "non-07", "label": "none", "expected_shortcut": null, "text": "If only I had remembered to call my dad on his birthday last year."}
+{"id": "non-08", "label": "none", "expected_shortcut": null, "text": "Three things I want to investigate: the cache miss, the auth flow, and the timeout."}
+{"id": "non-09", "label": "none", "expected_shortcut": null, "text": "I've been thinking about whether I should send Jake a message but it can probably wait."}
+{"id": "non-10", "label": "none", "expected_shortcut": null, "text": "The architecture feels overcomplicated. Two queues where one would do."}
+{"id": "non-11", "label": "none", "expected_shortcut": null, "text": "Note to self: never agree to a deadline before reading the spec."}
+{"id": "non-12", "label": "none", "expected_shortcut": null, "text": "What's the right cadence for these sync meetings, weekly or biweekly?"}
+{"id": "non-13", "label": "none", "expected_shortcut": null, "text": "I wonder if scheduling something earlier in the day would actually help my focus."}
+{"id": "non-14", "label": "none", "expected_shortcut": null, "text": "Today I finally understood the lifetime-elision rules and it was beautiful."}
+{"id": "non-15", "label": "none", "expected_shortcut": null, "text": "Six recordings in a row and the queue handled all of them without dropping any."}
