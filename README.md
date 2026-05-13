@@ -38,7 +38,7 @@ This installs `Mnemonic.app` into `/Applications` and symlinks the `mnemonic` CL
 
 #### Option B: Direct download
 
-Download the latest `Mnemonic_0.5.0_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page. Drag `Mnemonic.app` to `/Applications`. Then click the gray dot in the menu bar → **Install CLI** to symlink `~/.mnemonic/bin/mnemonic` (no admin password needed) and add it to `PATH`:
+Download the latest `Mnemonic_0.3.0_aarch64.dmg` from the [GitHub releases](https://github.com/EduardMaghakyan/mnemonic/releases/latest) page. Drag `Mnemonic.app` to `/Applications`. Then click the gray dot in the menu bar → **Install CLI** to symlink `~/.mnemonic/bin/mnemonic` (no admin password needed) and add it to `PATH`:
 
 ```bash
 echo 'export PATH="$HOME/.mnemonic/bin:$PATH"' >> ~/.zshrc
@@ -154,7 +154,7 @@ The tray icon reflects state:
 - **red** — recording
 - **yellow** — processing (model is structuring)
 
-### Intent routing (v0.5+)
+### Intent routing (v0.3+)
 
 Mnemonic can route the transcribed text through a second, fast Gemma 4 call that detects whether your note is asking the OS to do something — *"remind me to call Sarah at 3 PM"*, *"schedule a 1:1 with Priya for Thursday at 4"* — and if so, fires a macOS Shortcut you've defined. Opt-in, whitelisted, undoable.
 
@@ -217,20 +217,27 @@ The intent call adds ~1.7s per recording to the worker queue. Set `enabled = fal
 ```toml
 [hotkey]
 combo = "ctrl+alt+space"
-mode = "hold"             # "hold" (push-to-talk) or "toggle"
+mode = "hold"                         # "hold" (push-to-talk) or "toggle"
+screenshot_combo = "ctrl+alt+cmd+space"   # region-select + auto-record; "" to disable
 
 [audio]
-max_seconds = 300         # auto-stop cap
-keep_raw = true           # save the WAV alongside the note
+max_seconds = 300                     # auto-stop cap
+keep_raw = true                       # save the WAV alongside the note
 
 [paths]
 notes_dir = "~/Mnemonic/notes"
 audio_dir = "~/Mnemonic/audio"
+inbox_dir = "~/Mnemonic/inbox"        # pending recordings live here until structuring completes
 
 [model]
 endpoint = "http://127.0.0.1:5809"
 name = "gemma-4-e4b-it"
-thinking = true           # Gemma 4's chain-of-thought; set false for ~5x faster but less accurate structuring
+thinking = true                       # Gemma 4's chain-of-thought; set false for ~5x faster but less accurate structuring
+
+[intents]
+enabled = false                       # opt-in; see "Intent routing" above
+allowed_shortcuts = []                # whitelist of macOS Shortcut names that intents may fire
+undo_window_ms = 5000                 # tray Undo lifetime after a successful fire
 ```
 
 Edits hot-reload — the config file watcher re-registers the hotkey and applies path/model changes on save without a restart.

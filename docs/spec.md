@@ -169,9 +169,9 @@ Added in v0.3. Optional; never required to record.
 - **Rendering.** The bullet keeps its single-line shape (prose + `[audio]` link). When an image is kept, the `![](rel.png)` embed is appended as its own 2-space indented block separated by a blank line; when `image_note` is present, another blank line and the continuation block follows (fenced code block for `text`, italicised one-liner for `caption`). The 2-space indent keeps every block inside the bullet's list item in CommonMark/Obsidian. Embed and `image_note` are independent: either, both, or neither may appear.
 - **Privacy invariance.** Image bytes never leave loopback; they travel only to `127.0.0.1:5809`. The privacy guarantees in §4 hold unchanged.
 
-### 2.12 Recording queue (v0.4+)
+### 2.12 Recording queue (v0.3+)
 
-Added in v0.4. Decouples "user stopped speaking" from "model finished structuring."
+Added in v0.3. Decouples "user stopped speaking" from "model finished structuring."
 
 - **Disk layout.** Each pending recording is a directory under `paths.inbox_dir` (default `~/Mnemonic/inbox`). The directory contains `manifest.json` (`{ "schema_version": 1, "recorded_at": "<RFC3339>" }`), `audio.wav`, and optionally `image.png`. The dir name begins with a UTC compact-RFC3339 timestamp so lexicographic sort = chronological order.
 - **Atomic enqueue.** Files are staged under `inbox/.partial-<id>/` and the dir is renamed to its final name only after all writes flush. Scanner skips `.partial-*`.
@@ -181,9 +181,9 @@ Added in v0.4. Decouples "user stopped speaking" from "model finished structurin
 - **Crash recovery.** On app startup the worker scans `inbox/` before accepting new signals. Anything left from a previous session (crash, kill, or `llama-server` outage during a session) is processed in chronological order without user intervention.
 - **UI.** A non-clickable tray-menu line at the top shows queue depth: `Queue: idle` when empty, `Queue: N waiting` otherwise. The tray icon itself remains binary (gray = Idle, red = Recording); there is no longer a "Processing" color.
 
-### 2.13 Intent routing (v0.5+)
+### 2.13 Intent routing (v0.3+)
 
-Added in v0.5. Forks the worker pipeline so a successful transcription can trigger a macOS Shortcut without polluting the daily-note source-of-truth.
+Added in v0.3. Forks the worker pipeline so a successful transcription can trigger a macOS Shortcut without polluting the daily-note source-of-truth.
 
 - **Config.** `[intents]` section with `enabled` (default `false` — opt-in), `allowed_shortcuts: Vec<String>` (whitelist — required), `undo_window_ms` (default `5000`).
 - **Pipeline.** After `structure_audio` returns `Ok` (silence check has passed) and the config gates above are satisfied, the worker calls `extract_intent(cleaned, allowed_shortcuts, &req)`. The intent request always uses `chat_template_kwargs: { enable_thinking: false }` and `max_tokens: 512` per the Phase 0 spike findings (`docs/spike/intent/PHASE-0-INTENT-FINDINGS.md`).
