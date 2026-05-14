@@ -196,7 +196,6 @@ The intent call adds ~1.7s per recording to the worker queue. Set `enabled = fal
 - **Open config…** — opens `~/.config/mnemonic/config.toml` in your default editor for `.toml`
 - **Install CLI** — symlinks `~/.mnemonic/bin/mnemonic` (add that dir to your `PATH`)
 - **Reveal log in Finder** — points at `~/Library/Logs/Mnemonic/mnemonic_rCURRENT.log`
-- **Grant Microphone Access…** — opens System Settings → Privacy & Security → Microphone
 - **Quit Mnemonic**
 
 ### CLI
@@ -292,7 +291,7 @@ Run `mnemonic doctor` first. It surfaces the most common issues with actionable 
 | Symptom | Likely cause |
 |---|---|
 | Hotkey does nothing | Confirm the binary has Accessibility access (rare — only matters in apps with Secure Input). Default Carbon hotkey path doesn't require it. |
-| Notification "Microphone permission is denied" | Tray menu → Grant Microphone Access… and toggle Mnemonic on |
+| Notification "Microphone permission is denied" | System Settings → Privacy & Security → Microphone, toggle Mnemonic on, then try again |
 | Notification "llama-server isn't reachable" | Start `llama-server` per the install steps above |
 | Daily note shows `## HH:MM — Recording failed` | llama-server was unreachable when the recording was made. The audio is preserved at `~/Mnemonic/audio/YYYY-MM-DD/`. |
 | Daily note shows `## HH:MM — Structuring failed` | Model returned non-JSON twice. Audio is preserved; you can listen to it manually. |

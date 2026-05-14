@@ -17,7 +17,7 @@ use mnemonic_core::{
     NoteContent, NoteStatus, StructureRequest, StructuringResult,
 };
 use log::{error, info, warn};
-use mnemonic_core::permissions::{mic_status, MicStatus, PRIVACY_MIC_PANE};
+use mnemonic_core::permissions::{mic_status, MicStatus};
 use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
@@ -472,7 +472,7 @@ fn try_start_recording(app: &AppHandle, image_override: Option<Vec<u8>>) {
         notify(
             app,
             "Mnemonic",
-            "Microphone permission is denied. Tray menu → Grant Microphone Access… or System Settings → Privacy & Security → Microphone.",
+            "Microphone permission is denied. Enable it in System Settings → Privacy & Security → Microphone, then try again.",
         );
         return;
     }
@@ -916,12 +916,6 @@ fn open_config_file(path: &Path) {
     }
 }
 
-fn open_url(url: &str) {
-    if let Err(e) = std::process::Command::new("open").arg(url).spawn() {
-        warn!("open {url}: {e}");
-    }
-}
-
 fn reveal_in_finder(path: &Path) {
     if let Err(e) = std::process::Command::new("open")
         .args(["-R"])
@@ -1238,8 +1232,6 @@ fn main() {
                 MenuItemBuilder::with_id("install_cli", "Install CLI").build(app)?;
             let reveal_log =
                 MenuItemBuilder::with_id("reveal_log", "Reveal log in Finder").build(app)?;
-            let grant_mic =
-                MenuItemBuilder::with_id("grant_mic", "Grant Microphone Access…").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit Mnemonic").build(app)?;
             let menu = MenuBuilder::new(app)
                 .item(&queue_status)
@@ -1248,8 +1240,6 @@ fn main() {
                 .item(&open_cfg)
                 .item(&install_cli_item)
                 .item(&reveal_log)
-                .separator()
-                .item(&grant_mic)
                 .separator()
                 .item(&quit)
                 .build()?;
@@ -1273,7 +1263,6 @@ fn main() {
                     "open_config" => open_config_file(&menu_cfg_path),
                     "install_cli" => install_cli(app),
                     "reveal_log" => reveal_in_finder(&menu_log_path),
-                    "grant_mic" => open_url(PRIVACY_MIC_PANE),
                     "undo_last" => invoke_undo(app),
                     "quit" => app.exit(0),
                     _ => {}

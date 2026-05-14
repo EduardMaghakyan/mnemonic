@@ -35,7 +35,7 @@ The following are explicitly out of scope and must not be built:
 
 - The app must declare `NSMicrophoneUsageDescription` with a user-visible string explaining audio is processed locally.
 - The global hotkey is registered via Carbon `RegisterEventHotKey` (through `tauri-plugin-global-shortcut`). This API does **not** require Accessibility permission for normal use, so the app does not prompt for it. `mnemonic doctor` reports Accessibility status as informational only — it matters only in edge cases (e.g., apps using Secure Input mode capture the hotkey before it reaches us).
-- If microphone permission is denied, pressing the hotkey must produce a notification explaining how to grant it. It must not silently fail. The tray menu surfaces "Grant Microphone Access…" which opens System Settings to the correct pane.
+- If microphone permission is denied, pressing the hotkey must produce a notification explaining how to grant it (System Settings → Privacy & Security → Microphone). It must not silently fail. First-use prompting is delegated to macOS — the system dialog appears the first time `AVCaptureDevice` is touched with `NotDetermined` status. No tray-menu shortcut to the Settings pane; the contextual notification is the recovery path.
 
 ### 2.3 Model integration
 

@@ -51,7 +51,5 @@ mod platform {
 
 pub use platform::{accessibility_trusted, mic_status};
 
-pub const PRIVACY_MIC_PANE: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
 pub const PRIVACY_ACCESSIBILITY_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
